@@ -71,7 +71,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from scipy.ndimage import gaussian_filter, label, maximum_filter
+from scipy.ndimage import binary_dilation, binary_erosion, gaussian_filter, label, maximum_filter
 from scipy.optimize import curve_fit
 
 # The camera's own emissivity setting for this campaign. It is an assumption, not a
@@ -81,6 +81,10 @@ ASSUMED_EMISSIVITY = 0.95
 
 # Radiance goes as (T + 273.15) ** BAND_EXPONENT over this camera's band.
 BAND_EXPONENT = 4.0
+
+# 4-neighbourhood, matching the repair module's stencil so "adjacent" means the same
+# thing on both sides of the pipeline.
+CROSS = np.asarray([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=bool)
 
 # A rectified board fills the whole grid, but the outermost pixels mix board with
 # background through the rectification's bilinear sampling, and that mixing produces
@@ -489,6 +493,8 @@ def measure_heating_rate(
     *,
     cooling_rate_per_s: float,
     spread_rate_px2_per_s: float,
+    footprint_mask: np.ndarray | None = None,
+    edge_band_px: int = 3,
     theta_true: np.ndarray | None = None,
     gain: np.ndarray | None = None,
     method: str = "rise",
@@ -535,6 +541,16 @@ def measure_heating_rate(
 
     Both need an emissivity estimate to mean anything, and estimating emissivity is
     the step this design exists to avoid.
+
+    ``footprint_mask`` matters more than it looks. The curvature term is computed on
+    the raw field, and the raw field has a *step* at the rim of every metal lid --
+    which is an emissivity artifact, not a temperature. Measured on case10 the
+    curvature there is 0.558 K/px^2 against 0.092 on clean board, six times larger,
+    so the spreading term injects 0.35 K/s of pure artifact along every rim, a third
+    of the real signal. That is enough to manufacture a hot spot at each rim: without
+    this guard the leading peaks move from a median 4.6 px away from a lid edge to
+    1.0 px, with seven of ten sitting exactly on one. Passing the mask suppresses the
+    curvature term within ``edge_band_px`` of a rim, where it is meaningless anyway.
     """
     theta_apparent = np.asarray(theta_apparent, dtype=np.float64)
     times = np.asarray(times_s, dtype=np.float64)
@@ -560,6 +576,15 @@ def measure_heating_rate(
             raise ValueError(f"gain {gain.shape} does not match the board {theta_apparent.shape[1:]}")
         corrected = True
 
+    # Where the curvature term is allowed to act: nowhere near an emissivity step.
+    smooth_enough = np.ones(theta_apparent.shape[1:], dtype=bool)
+    if footprint_mask is not None:
+        footprint_mask = np.asarray(footprint_mask, dtype=bool)
+        if footprint_mask.shape != smooth_enough.shape:
+            raise ValueError(f"footprint_mask {footprint_mask.shape} does not match {smooth_enough.shape}")
+        rim = footprint_mask ^ binary_erosion(footprint_mask, CROSS)
+        smooth_enough = ~binary_dilation(rim, CROSS, iterations=int(edge_band_px))
+
     if method == "onset":
         # Warming dominates here, so read it straight off without correcting for the
         # other two terms -- that independence is exactly what makes it a cross-check.
@@ -578,8 +603,9 @@ def measure_heating_rate(
             if corrected:
                 measured = measured * gain
             smoothed = gaussian_filter(level[index], 1.0)
+            curvature = np.where(smooth_enough, _laplacian(smoothed), 0.0)
             contributions.append(
-                measured + cooling_rate_per_s * level[index] - spread_rate_px2_per_s * _laplacian(smoothed)
+                measured + cooling_rate_per_s * level[index] - spread_rate_px2_per_s * curvature
             )
         if not contributions:
             raise ValueError("no usable interior frames; check that times increase")
@@ -630,6 +656,7 @@ def find_hotspots(
     min_area_px: int = 6,
     separation_px: int = 13,
     background_px: float = 12.0,
+    rim_exclusion_px: int = 3,
     pixel_size_mm: float | None = None,
 ) -> list[Hotspot]:
     """Rank the places that make heat, strongest first.
@@ -657,6 +684,15 @@ def find_hotspots(
 
     interior = np.zeros(rate.shape, dtype=bool)
     interior[BORDER_MARGIN_PX:-BORDER_MARGIN_PX, BORDER_MARGIN_PX:-BORDER_MARGIN_PX] = True
+
+    # A pixel straddling a lid rim is part board and part metal, so its apparent
+    # warming rate is a blend of two different scalings and means nothing on its own.
+    # Rim pixels also score well against a surrounding ring that spans both sides of
+    # the step, so the cross-check does not catch them either -- they have to be
+    # excluded here, at the source.
+    if footprint_mask is not None:
+        rim = footprint_mask ^ binary_erosion(footprint_mask, CROSS)
+        interior &= ~binary_dilation(rim, CROSS, iterations=int(rim_exclusion_px))
     if not interior.any():
         return []
 
