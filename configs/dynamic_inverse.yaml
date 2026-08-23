@@ -1,0 +1,80 @@
+# Analysis configuration for the dynamic thermal inversion.
+#
+# This file records what the *analysis* does.  Changing it means rerunning a
+# fit, not restating a measurement -- acquisition metadata lives in
+# measurements_v3.yaml.  Every ablation in the report is a change to one field
+# here, which is what makes each ablation traceable to a config.
+
+output_dir: outputs/dynamic_inverse
+seed: 0
+device: cpu
+
+phases:
+  # Smoothing window for the mean-excess curve, in seconds.
+  smooth_seconds: 120.0
+  # The moving/steady boundary is a fraction of this sequence's own 95th
+  # percentile slope; a fixed K/s cannot serve both a 6 s and a 60 s cadence,
+  # and cannot serve both "s" and "frame" time units at all.
+  slope_threshold_relative: 0.25
+  steady_slope_k_per_s: 1.0e-4      # absolute floor under the relative rule
+  min_phase_seconds: 180.0
+  # Used to decide where a decay stops being a decay: the interval is extended
+  # while the mean stays within this of its running minimum.
+  rewarm_tolerance_k: 0.5
+  idle_window_seconds: 300.0
+
+regions:
+  n_regions: 64
+  method: slic                       # slic | grid
+  compactness: 0.5                   # lower follows the thermal/emissivity structure
+  resolutions: [32, 64, 128]         # reported so conclusions can be checked against scale
+  use_emissivity_feature: true
+  use_trajectory_feature: true
+  min_valid_fraction: 0.25
+
+model:
+  node_embedding_dim: 32
+  hidden_dim: 64
+  source_hidden_dim: 32
+  source_time_features: 8
+  dropout: 0.0
+
+loss:
+  rollout: 1.0
+  observed: 0.5                      # extra pull from directly-measured pixels
+  source_l1: 3.0e-3                  # spatial sparsity of the source
+  source_tv_time: 3.0e-3             # temporal smoothness of the source
+  edge_reg: 1.0e-4
+  spatial_smooth: 1.0e-3             # similarity-gated, so package edges survive
+  stability: 1.0
+
+train:
+  epochs_thermal: 400
+  epochs_source: 400
+  epochs_joint: 100
+  lr_thermal: 5.0e-3
+  lr_source: 1.0e-2
+  lr_joint: 5.0e-4
+  # Multi-step rollout, never a one-step derivative fit.  12 steps (~75 s at
+  # this cadence) measured best on case10: longer windows weight the fast head
+  # of the decay more heavily and generalise worse to the slow tail.
+  rollout_steps: 12
+  rollout_stride: 2
+  batch_windows: 16
+  integrator: rk4
+  grad_clip: 1.0
+  huber_delta: 1.0
+  patience: 120
+
+split:
+  # Contiguous blocks inside each phase.  Never shuffled: neighbouring frames on
+  # a ~6 s cadence are near-duplicates, and a random split would report an error
+  # that measures interpolation rather than generalisation.
+  train_fraction: 0.6
+  val_fraction: 0.2
+
+uncertainty:
+  seeds: [0, 1, 2, 3, 4]
+  bootstrap_windows: 4
+  region_resolutions: [48, 64, 96]
+  high_cv_threshold: 0.5

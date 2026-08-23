@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Run artefacts (regenerate with `python -m tdp.dynamic_inverse run`)
+outputs/
+
+# macOS
+.DS_Store
+
+# Measurement campaign: 3.1 GB of HIKMICRO CSV exports, kept out of git.
+# Paths are non-ASCII; `git add -A` without this line tries to stage the whole set.
+实验数据（黑胶带版）/

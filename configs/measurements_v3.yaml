@@ -1,0 +1,118 @@
+# Acquisition metadata for the black-tape / bare-board IR campaign.
+#
+# This file records what the *experiment* was.  Editing it restates a
+# measurement, so every number here is either read off the raw files or
+# labelled as an assumption.  Analysis knobs live in dynamic_inverse.yaml.
+
+dataset_root: 实验数据（黑胶带版）
+
+# The Raspberry Pi 4B PCB outline.  This is the only length standard in the
+# campaign: the camera recorded no focal length or field of view, so the board
+# itself is what sets the pixel scale.  It is a geometric estimate, not a
+# calibration, and pixel_size.calibrated stays false in every run's metadata.
+board_size_mm: [85.0, 56.0]
+board_size_note: Raspberry Pi 4B PCB outline
+
+sequences:
+
+  case10_rpi4b_bare_full:
+    case_dir: case10_树莓派4B裸板_满负载
+    device: raspberry_pi_4b
+    surface: bare
+    load: full
+    board:
+      # angle_deg left unset -> measured per session by projection sharpness
+      # (this board sits about 2 deg off-axis).  The PCB outline is stated in
+      # derotated-frame row/column indices, read off the derotated reference
+      # frame; on a bare board the side ports protrude past the PCB edge, so
+      # automatic outlining is a few pixels ambiguous and is used only as a
+      # cross-check (written to run_metadata.json as board_window_estimated).
+      output_hw: [157, 103]
+      search_angle_deg: 20.0
+      edges_derotated: {top: 33, bottom: 193, left: 38, right: 148}
+    radiometry:
+      # The 2026-07-26/27 CSV export (Chinese dialect) carries no parameter
+      # block, so the camera's emissivity setting is NOT recorded.  0.95 is the
+      # instrument default; configs/dynamic_inverse.yaml drives a sweep over
+      # sensitivity_sweep to show how far the identified rates move.
+      assumed_emissivity: 0.95
+      recorded: false
+      reflected_temperature_c: null     # null -> per-frame ambient estimate
+      band_exponent: 4.0
+      sensitivity_sweep: [0.90, 0.93, 0.95, 1.00]
+    repair:
+      enabled: true
+      method: conduction
+      trust_decay_px: 6.0
+      max_extrapolation_px: 24.0
+    logs:
+      cpu_load: 记录csv文件/cpu_load_100.csv
+      soc_temp: 记录csv文件/soc_log_100.csv
+    phase_overrides: []
+    notes: >-
+      Bare board, 100% CPU load.  cpu_load_100.csv shows 100% from 16:52:11 to
+      about 17:17 and ~2% afterwards, and soc_log_100.csv never returns to
+      ambient: the load stopped, the board was never powered off.  The decay
+      interval is therefore a free-cooling *candidate* with a residual idle
+      source, and the thermal operator is fitted on the deviation from the idle
+      steady state so that residual cancels instead of being asserted to zero.
+
+  case17_rpi4b_painted_full:
+    case_dir: case17_树莓派4B黑色哑光漆_满负载
+    device: raspberry_pi_4b
+    surface: matte_black_paint
+    load: full
+    board:
+      output_hw: [157, 103]
+      search_angle_deg: 20.0
+      edges_derotated: {top: 36, bottom: 192, left: 35, right: 137}
+    radiometry:
+      assumed_emissivity: 0.95
+      recorded: false
+      reflected_temperature_c: null
+      band_exponent: 4.0
+      sensitivity_sweep: [0.90, 0.93, 0.95, 1.00]
+    repair:
+      # The paint is uniformly high-emissivity, so detection finds little to
+      # repair.  Left enabled so the same code path runs on both surfaces.
+      enabled: true
+      method: conduction
+      trust_decay_px: 6.0
+      max_extrapolation_px: 24.0
+    logs: {}
+    phase_overrides: []
+    notes: >-
+      Same board and load as case10 but painted matte black, so the low-
+      emissivity metal is covered and the measured field needs no repair.  Used
+      as the independent cross-check on the case10 repair and on the identified
+      rates.  Different session, so ambient and staging differ.
+
+  case09_rpi4b_bare_half:
+    case_dir: case09_树莓派4B裸板_半负载
+    device: raspberry_pi_4b
+    surface: bare
+    load: half
+    board:
+      output_hw: [157, 103]
+      search_angle_deg: 20.0
+      edges_derotated: {top: 33, bottom: 193, left: 36, right: 146}
+    radiometry: {assumed_emissivity: 0.95, recorded: false, band_exponent: 4.0}
+    repair: {enabled: true, method: conduction, trust_decay_px: 6.0, max_extrapolation_px: 24.0}
+    logs:
+      cpu_load: 记录csv文件/cpu_load_50.csv
+      soc_temp: 记录csv文件/soc_log_50.csv
+    notes: Half-load counterpart of case10; used for the load-level ablation.
+
+  case16_rpi4b_painted_half:
+    case_dir: case16_树莓派4B黑色哑光漆_半负载
+    device: raspberry_pi_4b
+    surface: matte_black_paint
+    load: half
+    board:
+      output_hw: [157, 103]
+      search_angle_deg: 20.0
+      edges_derotated: {top: 37, bottom: 192, left: 36, right: 138}
+    radiometry: {assumed_emissivity: 0.95, recorded: false, band_exponent: 4.0}
+    repair: {enabled: true, method: conduction, trust_decay_px: 6.0, max_extrapolation_px: 24.0}
+    logs: {}
+    notes: Half-load counterpart of case17.
