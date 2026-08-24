@@ -76,7 +76,7 @@ computation. The approved plan therefore trains locally and keeps `--device` plu
 A self-contained export is still built so a run is reproducible off-machine. **If the
 model grows, revisit this rather than assuming it still holds.**
 
-## Where the work is (2026-08-24)
+## Where the work is (2026-08-24, Stage 2 done)
 
 Full status, measured constants and the ordered remaining steps live in
 `~/.claude/plans/now-i-need-you-snoopy-kazoo.md` — **read its STATUS block before
@@ -96,9 +96,44 @@ right-hand side is heating rate ÷ spread rate). Output 240 reconstructed frames
 **Then** — pattern library + closed-form solver (no learning yet) → self-contained
 export → train the forecasting model → figures, video, report, ablations.
 
-**The three deliverables** — a reconstructed image for every one of the 240 powered
-frames; a forward prediction from any named frame through to the settled state at
-1-second steps; and `hotspots.csv`.
+**The three deliverables** — deliverable 1 (a reconstructed image for every one of the
+240 powered frames) and deliverable 3 (`hotspots.csv`) are **done**. Deliverable 2 (a
+forward prediction from any named frame through to the settled state at 1-second steps)
+needs the pattern library and the forecasting model.
+
+### What Stage 2 measured, and where it stops
+
+Scored on case17 — the same board painted matte black, so the parts case10 must guess at
+are *measured* there. Imposing case10's mask and rebuilding the 39.5% it hides:
+
+| | mean error | bias |
+|---|---|---|
+| edge-only fill (the old way) | 4.34 K | **−3.22 K**, cold every frame |
+| source-driven fill | 2.72 K | **+0.12 K** |
+
+Killing that systematic cold bias is the point of the whole stage. The remaining 2.6 K
+splits into a **wrong level** and a **wrong pattern** inside each block, and the split
+decides what can still be done:
+
+- Fitting each block's source to case17's *hidden truth* — the best any single number per
+  block can do — recovers the level (1.95 → 0.20 K) but barely moves the pattern
+  (1.91 → 1.56 K). **No extra source parameter can help the pattern.**
+- The ring fit's own gap is not a conditioning problem: condition number 81, and
+  per-sector, ridge and plain least squares agree to within 0.04 K. **The board around a
+  block does not carry more than that about what is under it.**
+
+Reading the *pattern* under a lid is the only way past this, and Stage 2 deliberately does
+not — that reading is wrong by an unknown emissivity factor. **Raised with the owner as a
+decision, not taken silently.**
+
+### One Part-1 verdict that Stage 2 contradicts, with case17 as referee
+
+Block 4 (175 mm² at (9.9, 42.9) mm) is called **passive** by the Part-1 edge test (33%
+outward, −0.20 K) but gets the *highest* fitted source rate of any block (+0.344 K/s).
+case17 settles it: that block's true mean is 29.9 K, the second hottest of all the blocks.
+**Stage 2 is right and the edge test is wrong there.** The edge test still wins on the
+connector bank, which both methods and the owner agree is passive. Treat `judge_footprints`
+as a screen, not a verdict.
 
 ## Units — the rule that must never be broken
 
