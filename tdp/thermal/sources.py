@@ -71,7 +71,14 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from scipy.ndimage import binary_dilation, binary_erosion, gaussian_filter, label, maximum_filter
+from scipy.ndimage import (
+    binary_dilation,
+    binary_erosion,
+    distance_transform_edt,
+    gaussian_filter,
+    label,
+    maximum_filter,
+)
 from scipy.optimize import curve_fit
 
 # The camera's own emissivity setting for this campaign. It is an assumption, not a
@@ -661,6 +668,10 @@ def find_hotspots(
 ) -> list[Hotspot]:
     """Rank the places that make heat, strongest first.
 
+    This handles **trusted board only**. Low-emissivity blocks are excluded outright
+    and judged separately by :func:`judge_footprints`, because inside one the camera's
+    reading is wrong by an unknown factor and no peak in it means anything.
+
     A hot spot is a local maximum of the heating-rate map *above its broad
     background* that clears ``relative_threshold`` of the strongest such peak and
     owns at least ``min_area_px`` contiguous pixels.
@@ -685,14 +696,15 @@ def find_hotspots(
     interior = np.zeros(rate.shape, dtype=bool)
     interior[BORDER_MARGIN_PX:-BORDER_MARGIN_PX, BORDER_MARGIN_PX:-BORDER_MARGIN_PX] = True
 
-    # A pixel straddling a lid rim is part board and part metal, so its apparent
-    # warming rate is a blend of two different scalings and means nothing on its own.
-    # Rim pixels also score well against a surrounding ring that spans both sides of
-    # the step, so the cross-check does not catch them either -- they have to be
-    # excluded here, at the source.
+    # Footprints are excluded outright, interior included -- not merely their rims.
+    # Inside a low-emissivity block the camera's reading is wrong by an unknown
+    # factor, so a bump in it carries no information about a source; on case10 that
+    # mistake put two detections inside the 970 mm^2 connector bank, a lump of passive
+    # metal. Whether a block generates heat is a different question, answered from the
+    # board outside it by :func:`judge_footprints`. A rim band beyond the block is
+    # dropped too, since those pixels are part board and part metal.
     if footprint_mask is not None:
-        rim = footprint_mask ^ binary_erosion(footprint_mask, CROSS)
-        interior &= ~binary_dilation(rim, CROSS, iterations=int(rim_exclusion_px))
+        interior &= ~binary_dilation(footprint_mask, CROSS, iterations=int(rim_exclusion_px))
     if not interior.any():
         return []
 
@@ -786,6 +798,141 @@ def cross_check(
             Hotspot(**{**spot.__dict__, "confidence_sd": excess, "stable": bool(excess >= strong_sd)})
         )
     return scored
+
+
+# --------------------------------------------------------------------------
+# footprints: is the whole block a heat source?
+# --------------------------------------------------------------------------
+@dataclass(frozen=True)
+class FootprintVerdict:
+    """Whether one low-emissivity block is generating heat or just sitting there."""
+
+    region_id: int
+    area_px: int
+    area_mm2: float | None
+    centroid_mm: tuple[float, float] | None
+    outward_fraction: float  # share of the perimeter where heat flows outward
+    mean_gradient_k: float  # inner ring minus outer ring, kelvin
+    sectors_used: int
+    sectors_total: int
+    touches_border: bool
+    verdict: str  # "heat source" | "passive" | "mixed" | "unusable"
+
+
+def judge_footprints(
+    theta: np.ndarray,
+    footprint_mask: np.ndarray,
+    *,
+    inner_px: tuple[float, float] = (2.0, 5.0),
+    outer_px: tuple[float, float] = (7.0, 11.0),
+    n_sectors: int = 24,
+    min_sector_px: int = 4,
+    min_sectors_used: int = 6,
+    source_fraction: float = 0.80,
+    passive_fraction: float = 0.35,
+    pixel_size_mm: float | None = None,
+) -> list[FootprintVerdict]:
+    """Decide whether each low-emissivity block is a heat source, from outside it.
+
+    Looking for a peak *inside* a footprint is meaningless: the camera's reading there
+    is wrong by an unknown factor, so a bump in it says nothing about a source. On
+    case10 that mistake put two detections inside the 1030 mm^2 connector bank -- a
+    lump of passive metal reading 13 C colder than the board around it.
+
+    What can be measured is the board *outside* the block, which is well-behaved. If
+    the block generates heat, that heat has to leave through its edge, so the
+    temperature must fall as you walk away from it -- and it must do so **all the way
+    around**. That is the whole test, and it never touches a single untrustworthy
+    pixel.
+
+    The way around matters more than the net. A passive lump sitting in the board's
+    own temperature gradient has heat flowing in one side and out the other: the net
+    is near zero but so is a plain flux integral for a *weak* source, so the two are
+    hard to tell apart. Consistency separates them cleanly -- a source is outward in
+    every direction, a passive lump is outward in roughly half of them, and something
+    being cooled is outward in almost none.
+
+    Two rings of board are sampled around each block, near and far, and compared
+    within each of ``n_sectors`` angular wedges. Wedges whose rings fall off the board
+    or land in a *different* footprint are dropped, and a block is only judged if at
+    least ``min_coverage`` of its wedges survive.
+
+    Use a settled frame, or an average of settled frames; the test assumes the
+    temperature field is no longer changing quickly.
+    """
+    theta = np.asarray(theta, dtype=np.float64)
+    footprint_mask = np.asarray(footprint_mask, dtype=bool)
+    if theta.shape != footprint_mask.shape:
+        raise ValueError(f"field {theta.shape} does not match mask {footprint_mask.shape}")
+    if not inner_px[0] < inner_px[1] <= outer_px[0] < outer_px[1]:
+        raise ValueError(f"rings must be ordered and disjoint, got {inner_px} and {outer_px}")
+
+    labels, n_labels = label(footprint_mask, structure=CROSS)
+    rows, cols = np.mgrid[0 : theta.shape[0], 0 : theta.shape[1]]
+    on_board = np.zeros(theta.shape, dtype=bool)
+    on_board[BORDER_MARGIN_PX:-BORDER_MARGIN_PX, BORDER_MARGIN_PX:-BORDER_MARGIN_PX] = True
+    # Only genuinely trustworthy board counts as a probe: a ring pixel belonging to a
+    # neighbouring block would carry that block's own bias into this block's verdict.
+    trusted = on_board & ~footprint_mask
+
+    verdicts: list[FootprintVerdict] = []
+    for region_id in range(1, n_labels + 1):
+        region = labels == region_id
+        distance = distance_transform_edt(~region)
+        centre_row = float(rows[region].mean())
+        centre_col = float(cols[region].mean())
+        angle = np.arctan2(rows - centre_row, cols - centre_col)
+        sector = np.floor((angle + np.pi) / (2 * np.pi) * n_sectors).astype(int) % n_sectors
+
+        inner = trusted & (distance >= inner_px[0]) & (distance < inner_px[1])
+        outer = trusted & (distance >= outer_px[0]) & (distance < outer_px[1])
+
+        outward = 0
+        used = 0
+        gradients: list[float] = []
+        for wedge in range(n_sectors):
+            a = inner & (sector == wedge)
+            b = outer & (sector == wedge)
+            if a.sum() < min_sector_px or b.sum() < min_sector_px:
+                continue
+            gradient = float(theta[a].mean() - theta[b].mean())
+            gradients.append(gradient)
+            used += 1
+            outward += gradient > 0
+
+        touches = bool(region[:BORDER_MARGIN_PX].any() or region[-BORDER_MARGIN_PX:].any()
+                       or region[:, :BORDER_MARGIN_PX].any() or region[:, -BORDER_MARGIN_PX:].any())
+        fraction = outward / used if used else 0.0
+        # A block against the board edge can never offer a full circle of probes, but
+        # a partial circle still answers the question: on case10 the connector bank
+        # gets nine wedges and all of them say the heat flows inward. Requiring full
+        # coverage would throw that away and call the clearest passive block on the
+        # board "unusable". Judge on what is available, and report how much that was.
+        if used < min_sectors_used:
+            verdict = "unusable"
+        elif fraction >= source_fraction:
+            verdict = "heat source"
+        elif fraction <= passive_fraction:
+            verdict = "passive"
+        else:
+            verdict = "mixed"
+
+        area = int(region.sum())
+        verdicts.append(
+            FootprintVerdict(
+                region_id=region_id,
+                area_px=area,
+                area_mm2=area * pixel_size_mm**2 if pixel_size_mm else None,
+                centroid_mm=(centre_row * pixel_size_mm, centre_col * pixel_size_mm) if pixel_size_mm else None,
+                outward_fraction=fraction,
+                mean_gradient_k=float(np.mean(gradients)) if gradients else 0.0,
+                sectors_used=used,
+                sectors_total=n_sectors,
+                touches_border=touches,
+                verdict=verdict,
+            )
+        )
+    return sorted(verdicts, key=lambda v: -v.outward_fraction)
 
 
 def cooling_rate_map(

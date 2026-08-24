@@ -148,6 +148,11 @@ Write equations as sentences where possible. Every reported quantity carries its
 - **Do not use the repaired field or an emissivity-derived gain in the source
   measurement.** Both smuggle emissivity estimation back in, and both measurably make
   it worse — every leading hot spot became a lid pixel with none confirmed.
+- **Never look for a hot spot inside a low-emissivity block.** The reading there is
+  wrong by an unknown factor, so a bump in it carries no information about a source.
+  On case10 that put two detections inside the 970 mm^2 connector bank -- passive
+  metal, which the owner identified on sight. Blocks are excluded from peak search
+  *entirely*, interior included, and judged separately by `judge_footprints`.
 - **Do not look for sources as bumps in a single frame.** The spatial second
   derivative finds lid edges on raw frames, and on repaired frames it finds nothing
   under the lids by construction, because the repair set the source to zero there.
@@ -159,6 +164,24 @@ Write equations as sentences where possible. Every reported quantity carries its
   duplicates. Use contiguous blocks with guard bands.
 - **Make regularisers dimensionless.** An absolute penalty on a rate of order 1e-3
   contributes ~1e-6 to a loss of order 1, so its configured weight does nothing.
+
+## The two-part source detection (the owner's design)
+
+1. **Low-emissivity blocks are judged from their edges, not their interiors.** If a
+   block generates heat, that heat must leave through its boundary, so the board
+   temperature falls as you walk away -- **all the way around**. Consistency is the
+   test, not net flux: a passive lump sitting in the board's gradient takes heat in
+   one side and lets it out the other, so its net is near zero and so is a weak
+   source's. Measured on case10: the SoC block is 100% outward over 22 of 24 sectors
+   at +2.10 K, while the connector bank is 22% outward at -0.71 K. Around the SoC the
+   board falls 37.5 -> 29.5 K with distance; around the connector bank it *rises*
+   18 -> 26 K. This test never touches an untrustworthy pixel.
+2. **Everywhere else, the time-derivative heating rate applies**, because the readings
+   there are trustworthy.
+
+Keep the footprint halo at **1 px**. At 2 px separate blocks merge (10 regions instead
+of 12) and 5 more points of the board are masked, for no benefit -- the ring probes
+start 2 px out, so the camera blur the halo was protecting against is already excluded.
 
 ## Report findings honestly, including against your own earlier claims
 

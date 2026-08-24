@@ -20,6 +20,7 @@ from tdp.thermal.sources import (
     ASSUMED_EMISSIVITY,
     BAND_EXPONENT,
     CoolingFit,
+    FootprintVerdict,
     HeatingRateMap,
     Hotspot,
     LoadDrop,
@@ -31,6 +32,7 @@ from tdp.thermal.sources import (
     find_load_drop,
     fit_cooling_rate,
     fit_spread_rate,
+    judge_footprints,
     measure_heating_rate,
 )
 
@@ -38,6 +40,7 @@ __all__ = [
     "ASSUMED_EMISSIVITY",
     "BAND_EXPONENT",
     "CoolingFit",
+    "FootprintVerdict",
     "HeatingRateMap",
     "Hotspot",
     "LoadDrop",
@@ -49,5 +52,6 @@ __all__ = [
     "find_load_drop",
     "fit_cooling_rate",
     "fit_spread_rate",
+    "judge_footprints",
     "measure_heating_rate",
 ]
