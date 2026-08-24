@@ -76,6 +76,30 @@ computation. The approved plan therefore trains locally and keeps `--device` plu
 A self-contained export is still built so a run is reproducible off-machine. **If the
 model grows, revisit this rather than assuming it still holds.**
 
+## Where the work is (2026-08-24)
+
+Full status, measured constants and the ordered remaining steps live in
+`~/.claude/plans/now-i-need-you-snoopy-kazoo.md` — **read its STATUS block before
+starting anything.** Short version:
+
+**Done** — `tdp/thermal/sources.py`: the load stop is found from the images (frame 239
+on case10), the cooling rate comes from the warm-up alone (0.00685 /s, response 146 s),
+and heat sources are found in two parts. On case10 that gives one heat-source block
+(the SoC, 269 mm² at (26.1, 32.7) mm, 100 % outward) and one trusted-board hot spot at
+(17.9, 10.3) mm. Figure: `outputs/thermal/case10/phase1_sources.png`.
+
+**Next** — `tdp/thermal/reconstruct.py`: fill the 12 untrustworthy blocks by solving the
+plate equation with the measured heating rate injected, reusing
+`tdp.data.emissivity.solve_plate` unchanged (it already accepts `source=`; its
+right-hand side is heating rate ÷ spread rate). Output 240 reconstructed frames.
+
+**Then** — pattern library + closed-form solver (no learning yet) → self-contained
+export → train the forecasting model → figures, video, report, ablations.
+
+**The three deliverables** — a reconstructed image for every one of the 240 powered
+frames; a forward prediction from any named frame through to the settled state at
+1-second steps; and `hotspots.csv`.
+
 ## Units — the rule that must never be broken
 
 The governing equation is divided through by the areal heat capacity. That division is
