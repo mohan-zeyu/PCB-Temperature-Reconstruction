@@ -5,7 +5,8 @@ Three stages, in order:
 1. :mod:`tdp.thermal.sources` -- measure the board's rates and find where it makes
    heat, using the images alone.
 2. :mod:`tdp.thermal.reconstruct` -- build a full temperature map for every frame,
-   driven by those sources rather than interpolated from footprint edges.
+   driven by those sources rather than interpolated from footprint edges.  Checked
+   against case17, where the components case10 must guess at are measured.
 3. :mod:`tdp.thermal.patterns` / :mod:`tdp.thermal.model` -- forecast forward from
    any moment.
 
@@ -16,6 +17,16 @@ second; nothing in this package is a power, and heat capacity varies across the
 board, so even ratios between hot spots are not power ratios.
 """
 
+from tdp.thermal.reconstruct import (
+    BlockSource,
+    Reconstruction,
+    TruthCheck,
+    heating_rate_from_reconstruction,
+    plate_residual,
+    reconstruct_sequence,
+    validate_against_truth,
+    warming_rate,
+)
 from tdp.thermal.sources import (
     ASSUMED_EMISSIVITY,
     BAND_EXPONENT,
@@ -39,6 +50,9 @@ from tdp.thermal.sources import (
 __all__ = [
     "ASSUMED_EMISSIVITY",
     "BAND_EXPONENT",
+    "BlockSource",
+    "Reconstruction",
+    "TruthCheck",
     "CoolingFit",
     "FootprintVerdict",
     "HeatingRateMap",
@@ -52,6 +66,11 @@ __all__ = [
     "find_load_drop",
     "fit_cooling_rate",
     "fit_spread_rate",
+    "heating_rate_from_reconstruction",
     "judge_footprints",
     "measure_heating_rate",
+    "plate_residual",
+    "reconstruct_sequence",
+    "validate_against_truth",
+    "warming_rate",
 ]
