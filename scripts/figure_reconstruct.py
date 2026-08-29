@@ -39,10 +39,32 @@ def case17_check():
     heating = th.measure_heating_rate(
         theta[:n], times[:n], cooling_rate_per_s=cooling,
         spread_rate_px2_per_s=SPREAD, footprint_mask=hidden, method="rise").rate_k_per_s
+    # The edge test is re-run on case17's own images, not copied from case10, so the
+    # centre-weighted source is chosen the same way it would be on any new board.
+    verdicts = th.judge_footprints(theta[min(120, n - 1)], hidden, pixel_size_mm=PX)
+    sources = [v.region_id for v in verdicts if v.verdict == "heat source"]
+    labels17, _ = th.block_labels(hidden)
     result = th.reconstruct_sequence(
         theta[:n], times[:n], hidden, heating, cooling_rate_per_s=cooling,
+        spread_rate_px2_per_s=SPREAD, board_mask=board, pixel_size_mm=PX,
+        heat_source_ids=sources)
+    check = th.validate_against_truth(result, theta[:n], region_labels=labels17)
+    # The ablation: the same fit with every source spread uniformly, which is what
+    # this figure reported before 2026-08-29.
+    flat = th.reconstruct_sequence(
+        theta[:n], times[:n], hidden, heating, cooling_rate_per_s=cooling,
         spread_rate_px2_per_s=SPREAD, board_mask=board, pixel_size_mm=PX)
-    check = th.validate_against_truth(result, theta[:n])
+    flat_check = th.validate_against_truth(flat, theta[:n], region_labels=labels17)
+    per_block = {}
+    for blk in result.blocks:
+        region = labels17 == blk.region_id
+        if region.sum() < 12:
+            continue
+        per_block[blk.region_id] = dict(
+            area_mm2=blk.area_mm2, shape=blk.source_shape,
+            centred=float(np.abs(result.theta_k[:, region] - theta[:n][:, region]).mean()),
+            uniform=float(np.abs(flat.theta_k[:, region] - theta[:n][:, region]).mean()),
+        )
     edge = np.stack([solve_plate(theta[i], hidden, result.spread_distance_px)
                      for i in range(0, n, 5)])
     truth = theta[0:n:5][:, hidden]
@@ -66,12 +88,26 @@ def case17_check():
                           ring_error_k=result.ring_error_k,
                           ring_error_no_source_k=result.ring_error_no_source_k),
         theta[:n])
+    # Where case17's own hottest patch is, located with no reference to case10 at
+    # all.  This is the alignment check: if the two runs were 180 degrees apart it
+    # would land on the connector bank instead of inside the SoC outline.
+    late = theta[min(120, n - 1)]
+    patch = late > np.percentile(late[board], 99.0)
+    plab, pn = label(patch)
+    biggest = max(range(1, pn + 1), key=lambda k: (plab == k).sum())
+    patch = plab == biggest
+    soc_id = max(sources, key=lambda i: (labels17 == i).sum()) if sources else None
+    soc = labels17 == soc_id if soc_id is not None else np.zeros(hidden.shape, bool)
+    rr, cc = np.nonzero(patch)
     return dict(
-        oracle=oracle_check,
+        oracle=oracle_check, per_block=per_block, flat_check=flat_check,
         truth=theta[:n], built=result.theta_k, mask=hidden, board=board, check=check,
         edge_bias=float((edge[:, hidden] - truth).mean()),
         edge_error=float(np.abs(edge[:, hidden] - truth).mean()),
-        frame=min(120, n - 1),
+        frame=min(120, n - 1), soc=soc, soc_id=soc_id,
+        patch_rc=(float(rr.mean()), float(cc.mean())), patch_px=int(patch.sum()),
+        patch_in_soc=int((patch & soc).sum()),
+        patch_rot_rc=tuple(float(v.mean()) for v in np.nonzero(np.rot90(patch, 2))),
     )
 
 
@@ -88,6 +124,16 @@ def main() -> int:
     c17 = case17_check()
 
     extent = (0, mask.shape[1] * PX, mask.shape[0] * PX, 0)
+    # imshow reads extent as (left, right, bottom, top), so (0, W, H, 0) puts row 0
+    # at the top.  contour reads the same tuple as (x0, x1, y0, y1) and maps row 0
+    # to y0 = H, which draws every outline mirrored top-to-bottom over the image it
+    # is supposed to annotate.  Pass explicit coordinates instead of an extent.
+    grid_y = np.arange(mask.shape[0]) * PX
+    grid_x = np.arange(mask.shape[1]) * PX
+
+    def outline(ax, field, **kwargs):
+        return ax.contour(grid_x, grid_y, np.asarray(field, dtype=np.float64), **kwargs)
+
     fig, axes = plt.subplots(2, 4, figsize=(21, 13))
     lo, hi = 0.0, float(built[show][board].max())
 
@@ -102,18 +148,18 @@ def main() -> int:
     a = axes[0, 0]
     board_map(a, measured[show], "1. What the camera reports, frame %d (t=%.0f s)\n"
               "outlined blocks read far too cold: metal lids, not cold parts" % (show, times[show]))
-    a.contour(np.where(edge, 1.0, 0.0), levels=[0.5], colors="cyan", linewidths=0.8, extent=extent)
+    outline(a, np.where(edge, 1.0, 0.0), levels=[0.5], colors="cyan", linewidths=0.8)
 
     a = axes[0, 1]
     board_map(a, built[show], "2. Reconstructed, same frame\n"
               "blocks filled by conduction with a fitted heat source underneath")
-    a.contour(np.where(edge, 1.0, 0.0), levels=[0.5], colors="cyan", linewidths=0.8, extent=extent)
+    outline(a, np.where(edge, 1.0, 0.0), levels=[0.5], colors="cyan", linewidths=0.8)
 
     a = axes[0, 2]
     diff = np.where(mask, built[show] - measured[show], np.nan)
     top = float(np.nanmax(np.abs(diff)))
     image = a.imshow(np.where(board, diff, np.nan), cmap="RdBu_r", vmin=-top, vmax=top, extent=extent)
-    a.contour(depth, levels=[5, 10, 15], colors="k", linewidths=0.7, extent=extent)
+    outline(a, depth, levels=[5, 10, 15], colors="k", linewidths=0.7)
     a.set_title("3. How much was added, kelvin\n"
                 "contours: 5, 10, 15 mm from the nearest trustworthy pixel", fontsize=11)
     a.set_xlabel("mm")
@@ -151,53 +197,72 @@ def main() -> int:
     m17, b17 = c17["mask"], c17["board"]
     hi17 = float(c17["truth"][frame17][b17].max())
     a = axes[1, 1]
-    board_map(a, c17["truth"][frame17], "6. case17, the painted board: MEASURED\n"
-              "here the parts case10 must guess at are trustworthy", vmax=hi17)
-    a.contour(np.where(m17 ^ binary_dilation(m17, CROSS), 1.0, 0.0), levels=[0.5],
-              colors="cyan", linewidths=0.8, extent=extent)
+    board_map(a, c17["truth"][frame17], "6. case17, painted: MEASURED\n"
+              "its own hottest patch (+) falls %d of %d px inside\n"
+              "case10's SoC outline: the two runs are aligned"
+              % (c17["patch_in_soc"], c17["patch_px"]), vmax=hi17)
+    outline(a, np.where(m17 ^ binary_dilation(m17, CROSS), 1.0, 0.0), levels=[0.5],
+            colors="cyan", linewidths=0.8)
+    soc = c17["soc"]
+    outline(a, np.where(soc, 1.0, 0.0), levels=[0.5], colors="lime", linewidths=2.0)
+    pr, pc = c17["patch_rc"]
+    a.plot(pc * PX, pr * PX, "w+", markersize=16, markeredgewidth=2.5)
+    rr, rc = c17["patch_rot_rc"]
+    a.plot(rc * PX, rr * PX, "x", color="#7f8fa4", markersize=13, markeredgewidth=2.0)
+    a.text(rc * PX + 2, rr * PX, "where it would be\nif rotated 180", fontsize=7,
+           color="#d0d0d0", va="center")
 
     a = axes[1, 2]
-    board_map(a, c17["built"][frame17], "7. case17 with case10's mask imposed, RECONSTRUCTED\n"
-              "the same 39.5% of the board hidden and rebuilt", vmax=hi17)
-    a.contour(np.where(m17 ^ binary_dilation(m17, CROSS), 1.0, 0.0), levels=[0.5],
-              colors="cyan", linewidths=0.8, extent=extent)
+    board_map(a, c17["built"][frame17], "7. case17, case10's mask imposed: RECONSTRUCTED\n"
+              "the same 39.5% hidden and rebuilt.  The SoC's source is\n"
+              "centre-weighted, every other block's uniform", vmax=hi17)
+    outline(a, np.where(m17 ^ binary_dilation(m17, CROSS), 1.0, 0.0), levels=[0.5],
+            colors="cyan", linewidths=0.8)
 
     a = axes[1, 3]
     a.axis("off")
     check = c17["check"]
     a.text(0.0, 1.0, "8. Scored against case17's truth\n", fontsize=13, weight="bold",
            va="top", transform=a.transAxes)
-    oracle = c17["oracle"]
-    a.text(0.0, 0.93, (
+    oracle, flat = c17["oracle"], c17["flat_check"]
+    blocks = c17["per_block"]
+    soc = max(blocks, key=lambda i: blocks[i]["area_mm2"] if blocks[i]["shape"] != "uniform" else -1)
+    worst = max(abs(blocks[i]["centred"] - blocks[i]["uniform"]) for i in blocks if i != soc)
+    a.text(0.0, 0.94, (
         "Filling the blocks from their edges only, the old way:\n"
-        "     mean error   %.2f K\n"
-        "     bias         %+.2f K   <- cold, every frame\n\n"
+        "    mean %.2f K, bias %+.2f K  <- cold in every frame\n\n"
         "Putting the measured heat source underneath:\n"
-        "     mean error   %.2f K\n"
-        "     bias         %+.2f K   <- the cold bias is gone\n"
-        "     worst 5 in 100                %.2f K\n\n"
-        "Where that remaining %.2f K sits:\n"
-        "     block sits at the wrong level    %.2f K\n"
-        "     wrong pattern inside the block   %.2f K\n\n"
-        "Now fit each block's source to case17's HIDDEN TRUTH\n"
-        "instead of to the ring -- the best one number per\n"
-        "block can possibly do:\n"
-        "     wrong level    %.2f K   <- nearly all recovered\n"
-        "     wrong pattern  %.2f K   <- barely moves\n\n"
-        "So the two halves have different causes:\n"
-        " - the LEVEL is limited by what the board around a\n"
-        "   block can say about what is under it.\n"
-        " - the PATTERN cannot be fixed by any per-block\n"
-        "   source at all.  A uniform source makes a smooth\n"
-        "   dome; the real blocks span 13-26 K inside.\n\n"
-        "Reading the pattern under a lid is the only way past\n"
-        "this.  Stage 2 deliberately does not -- that reading\n"
-        "is wrong by an unknown emissivity factor.  Worth a\n"
-        "decision rather than a silent choice."
-    ) % (c17["edge_error"], c17["edge_bias"], check.mean_absolute_k, check.bias_k,
-         check.p95_absolute_k, check.mean_absolute_k, check.level_error_k, check.shape_error_k,
+        "    spread uniformly over the block   %.2f K  (bias %+.2f)\n"
+        "    centre-weighted where the edge\n"
+        "    test says the block makes heat    %.2f K  (bias %+.2f)\n\n"
+        "That change touches one block on this board, the SoC:\n"
+        "    SoC block, uniform source         %.2f K\n"
+        "    SoC block, centre-weighted        %.2f K\n"
+        "    worst change on any other block   %+.2f K\n"
+        "A small die under a heat-spreading lid is not a uniform\n"
+        "source over 269 mm2.  A flat source builds a plateau, so\n"
+        "the middle came out cold while the edges were about right.\n\n"
+        "Where the remaining %.2f K sits:\n"
+        "    block at the wrong level   %.2f K\n"
+        "    wrong pattern inside it    %.2f K\n"
+        "Fitting each source to case17's HIDDEN truth instead of to\n"
+        "the ring -- the best one number per block can do -- leaves\n"
+        "level %.2f K and pattern %.2f K.\n\n"
+        "Reading the pattern under the lid was tried and it loses.\n"
+        "Four ways, all scored here: adding the pattern that grew\n"
+        "over the run, 2.63 -> 2.44 K at best; using only the\n"
+        "reflection-free time differences, 2.60 K, because 97%% of\n"
+        "the error is static; rebuilding a block straight from its\n"
+        "lid reading, 6.59 K; taking only its level, 4.83 K.  The\n"
+        "lid's gain is recoverable to 20%% at best, and its static\n"
+        "reflection offset cannot be told apart from the fill's own\n"
+        "level error -- one equation, two unknowns."
+    ) % (c17["edge_error"], c17["edge_bias"],
+         flat.mean_absolute_k, flat.bias_k, check.mean_absolute_k, check.bias_k,
+         blocks[soc]["uniform"], blocks[soc]["centred"], worst,
+         check.mean_absolute_k, check.level_error_k, check.shape_error_k,
          oracle.level_error_k, oracle.shape_error_k),
-        fontsize=10, va="top", family="monospace", transform=a.transAxes)
+        fontsize=8.8, va="top", family="monospace", transform=a.transAxes)
 
     fig.suptitle(
         "case10 Raspberry Pi 4B, full load -- every one of the 240 powered frames rebuilt "

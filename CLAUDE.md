@@ -76,7 +76,7 @@ computation. The approved plan therefore trains locally and keeps `--device` plu
 A self-contained export is still built so a run is reproducible off-machine. **If the
 model grows, revisit this rather than assuming it still holds.**
 
-## Where the work is (2026-08-24, Stage 2 done)
+## Where the work is (2026-08-29, Stage 2 done and refined)
 
 Full status, measured constants and the ordered remaining steps live in
 `~/.claude/plans/now-i-need-you-snoopy-kazoo.md` — **read its STATUS block before
@@ -108,23 +108,88 @@ are *measured* there. Imposing case10's mask and rebuilding the 39.5% it hides:
 
 | | mean error | bias |
 |---|---|---|
-| edge-only fill (the old way) | 4.34 K | **−3.22 K**, cold every frame |
-| source-driven fill | 2.72 K | **+0.12 K** |
+| edge-only fill (the old way) | 3.68 K | **−2.10 K**, cold every frame |
+| source-driven, source spread uniformly over each block | 2.63 K | **+0.01 K** |
+| source-driven, **centre-weighted where the edge test says the block makes heat** | **2.37 K** | +0.37 K |
 
-Killing that systematic cold bias is the point of the whole stage. The remaining 2.6 K
-splits into a **wrong level** and a **wrong pattern** inside each block, and the split
-decides what can still be done:
+Killing that systematic cold bias is the point of the whole stage. **These numbers replace
+an earlier table here that read 4.34 / −3.22 / 2.72 / +0.12 K; those were stale and did not
+match what the code produced.** Docstring, figure and this file now all report the same run.
+
+The remaining 2.4 K splits into a **wrong level** and a **wrong pattern** inside each block:
 
 - Fitting each block's source to case17's *hidden truth* — the best any single number per
-  block can do — recovers the level (1.95 → 0.20 K) but barely moves the pattern
-  (1.91 → 1.56 K). **No extra source parameter can help the pattern.**
-- The ring fit's own gap is not a conditioning problem: condition number 81, and
-  per-sector, ridge and plain least squares agree to within 0.04 K. **The board around a
-  block does not carry more than that about what is under it.**
+  block can do — leaves 1.57 K, of which 1.56 K is pattern and 0.20 K level. **No extra
+  source parameter can help the pattern.**
+- **The board-wide bias hides the per-block level errors.** They reach **±4.4 K** and
+  cancel: block 1 is +4.5 K hot while the SoC block is −4.4 K cold, and the average comes
+  out near zero. Always report the per-block level, never only the aggregate.
+- An earlier claim here — "the ring fit's own gap is not a conditioning problem: condition
+  number 81, and per-sector, ridge and plain least squares agree to within 0.04 K" — was
+  **reasoned wrongly and is withdrawn.** Three estimators agreeing shows they extract the
+  same information, not that the information suffices. What sets the level error is the
+  ring residual times the amplification: **1.87 K of residual against condition number 81.**
 
-Reading the *pattern* under a lid is the only way past this, and Stage 2 deliberately does
-not — that reading is wrong by an unknown emissivity factor. **Raised with the owner as a
-decision, not taken silently.**
+### The source's shape inside a block, not just its size (2026-08-29)
+
+A die under an SoC lid dissipates over a few mm; the lid spreads it over ten times that
+area. A **uniform** source over the whole 269 mm² therefore builds a plateau — about right
+at the block's rim, which measured board pins from a pixel away, and several kelvin cold in
+the middle. That is exactly what the owner saw. Weighting the source by distance from the
+block's own rim (exponent 1.0, `CONCENTRATION_EXPONENT`) matches the geometry at **no extra
+parameter**: the SoC block goes **4.38 → 2.51 K** and its level bias **−4.38 → −1.83 K**.
+
+Choose the shape **per block from the edge test**, never globally:
+
+- concentrating *every* block gives 2.98 K, **worse** than uniform — a connector bank
+  really is distributed.
+- the exponent optimum is flat (0.5 → 2.43 K, 1.0 → 2.36 K, 1.5 → 2.40 K) and 2.0 is
+  already too sharp (2.46 K, SoC back to 3.16 K).
+- the error asymmetry runs strongly against false positives: a source block left uniform
+  costs **0.03 K**, a passive block wrongly concentrated costs **several K**. Pass only
+  confident `heat source` verdicts. On case10 that is exactly one block, the SoC, at 100%
+  outward over 22 of 24 sectors.
+
+`--uniform-sources` on `scripts/run_reconstruct.py` is the ablation.
+
+### Reading the pattern under a lid: tried four ways, all lose
+
+The owner asked for this to be tried. It was, and it fails for a measurable reason. All
+scored on case17 with the gain and the reflection offset calibrated from the block's own
+rim, never from truth, and with the lid's roughness set to what case10's lids actually
+carry:
+
+| what was tried | error |
+|---|---|
+| add the pattern that grew over the run (reflection-free: a fixed lid reflecting a fixed room is constant in time, so a time difference cancels it exactly) | 2.63 → **2.44 K** at the absolute ceiling |
+| use only reflection-free time differences | **2.60 K** |
+| rebuild each block straight from its lid reading | **6.59 K** |
+| take only the block's level from the lid reading | **4.83 K** |
+
+Why, in order of how much each one bites:
+
+- **97% of the squared error is static.** Anything built from differences of lid frames can
+  only reach the other 3%.
+- **The lid's gain is recoverable to 20% at best** (worst block 98%). The only reference for
+  the true temperature under a block is the fill being corrected, so the calibration is
+  circular. A 10% gain error on a 30 K field is already 3 K.
+- **The static reflection offset and the fill's own static level error are the same
+  unknown.** The lid reading gives one static equation per block for two static unknowns.
+  This is structural, not a tuning failure.
+- Real lids are not smooth enough to be temperature anyway: case10's lid interiors carry
+  **0.5–2.0 K of 2 px structure** above the camera's 0.42 K floor, and it does not fall off
+  as you erode deeper, so it is not a rim artifact. Heat spreading 16 px cannot sustain 2 px
+  structure — that reading is reflection, not temperature.
+
+One useful by-product, kept: the **growth pattern** (late mean − early mean, normalised per
+block) recovers a block's true internal temperature shape at correlation **0.93–1.00** and
+is completely immune to reflection scatter. It is the right tool if a future stage ever
+needs a shape under a lid; it just cannot supply the *level*, which is what was missing.
+
+Also measured and closed: **case17's fitted rates do not transfer to case10** (ratios −7.5
+to +27, signs disagreeing on 4 of 11 blocks), so borrowing the painted board's numbers is
+not an option. Within one run, though, a single rate per block for the whole powered
+stretch is nearly as good as per-frame rates (1.57 → 1.75 K) — useful for Stage 3.
 
 ### One Part-1 verdict that Stage 2 contradicts, with case17 as referee
 
@@ -219,6 +284,16 @@ Write equations as sentences where possible. Every reported quantity carries its
 - **Do not trust a fitted rate whose confidence interval includes zero.** The
   second-moment spread estimator returned *negative* spreading for four of six
   candidates — it was measuring where the baseline was put, not diffusion.
+- **Never give `contour` an `imshow` extent.** `imshow` reads `(0, W, H, 0)` as
+  `(left, right, bottom, top)`, so row 0 lands at the top. `contour` reads the same tuple
+  as `(x0, x1, y0, y1)` and maps row 0 to `y = H`, so **every outline is drawn mirrored
+  top-to-bottom over the image it annotates.** This shipped in
+  `phase2_reconstruction.png` and made the block outlines miss their blocks — which is what
+  the owner spotted and reported as the two runs looking 180° apart. The data was never
+  affected; only the overlay. Pass explicit coordinate arrays
+  (`ax.contour(grid_x, grid_y, Z)`); a test now fails if `contour` is given an `extent`.
+- **A board-average bias can hide per-block errors that cancel.** Stage 2's +0.01 K bias
+  covers ±4.4 K per-block level errors of opposite sign. Choose the per-block metric first.
 - **Never split frames randomly.** Adjacent frames on a ~6 s cadence are near
   duplicates. Use contiguous blocks with guard bands.
 - **Make regularisers dimensionless.** An absolute penalty on a rate of order 1e-3
@@ -256,7 +331,7 @@ correct it.
 ## Commands
 
 ```bash
-python -m pytest tests/ -q                                       # 52 tests, ~37 s
+python -m pytest tests/ -q                                       # 71 tests, ~41 s
 python -m tdp.dynamic_inverse run --smoke --sequence case10_rpi4b_bare_full
 ```
 

@@ -235,8 +235,11 @@ def test_nothing_reported_is_a_power(board):
     theta, times, mask, source = board
     result = _fill(theta, times, mask, source)
     names = set(vars(result.blocks[0])) | set(result.report) | set(vars(result))
-    forbidden = ("watt", "_w", "power", "conductivity", "heat_capacity", "joule")
+    forbidden = ("watt", "power", "conductivity", "heat_capacity", "joule")
     assert not [n for n in names if any(f in n.lower() for f in forbidden)]
+    # "_w" has to be a suffix test, not a substring one: it is there to catch a
+    # name like power_w, and as a substring it also flags n_centre_weighted.
+    assert not [n for n in names if n.endswith("_w") or "_w_per_" in n or "_w_m" in n]
     # Every quantity carries its unit in its name, so a caller cannot mistake a
     # rate that was divided by heat capacity for one that was not.
     units = ("_k_per_s", "_per_s", "_px2_per_s", "_by_frame", "_px", "_mm", "_k")
@@ -254,3 +257,135 @@ def test_refuses_a_non_positive_spread_rate(board):
     with pytest.raises(ValueError, match="must both be positive"):
         rc.reconstruct_sequence(theta, times, mask, source,
                        cooling_rate_per_s=COOLING_RATE_PER_S, spread_rate_px2_per_s=0.0)
+
+
+# --------------------------------------------------------------------------
+# the source's shape inside a block
+# --------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def die_board():
+    """A block whose heat comes from a small die in the middle, not the whole area.
+
+    This is the real geometry under an SoC lid: the die is a few mm across and the
+    lid spreads its heat over ten times that area.  Spreading the fitted source
+    uniformly over the whole block instead builds a flat-topped plateau, which
+    reads about right at the block's edges and several kelvin cold in the middle.
+    """
+    source = np.full(GRID, BACKGROUND_K_PER_S)
+    source[HOT_BLOCK] = 0.0
+    # Concentrated by 3x, not into a point.  The test plate has one spread rate
+    # everywhere and so has no lid to smooth a spike: a 25 px source carrying the
+    # whole block's heat makes a 40 K peak that no single shape can represent, and
+    # then both fills are equally hopeless (14.8 K against 18.8 K).  3x is the
+    # regime the real board is in -- a dome, not a spike.
+    die = _blob((22, 20), (5, 5))
+    source[die] = HOT_BLOCK_RATE * HOT_BLOCK.sum() / die.sum()  # same total, concentrated
+    source[COOL_BLOCK] = 0.0
+    theta, times = _evolve(source)
+    return theta, times, HOT_BLOCK | COOL_BLOCK, source
+
+
+def _hot_id(mask):
+    labels, _ = rc.block_labels(mask)
+    return int(np.bincount(labels[HOT_BLOCK]).argmax())
+
+
+def test_centre_weighted_source_beats_a_uniform_one_under_a_die(die_board):
+    """The measured case: on case17 this takes the SoC block 4.38 K -> 2.51 K."""
+    theta, times, mask, source = die_board
+    hot = _hot_id(mask)
+    flat = _fill(theta, times, mask, source)
+    centred = rc.reconstruct_sequence(
+        theta, times, mask, source,
+        cooling_rate_per_s=COOLING_RATE_PER_S,
+        spread_rate_px2_per_s=SPREAD_RATE_PX2_PER_S,
+        ring_px=6, pixel_size_mm=0.5425, heat_source_ids=[hot],
+    )
+    truth = theta
+    flat_error = np.abs(flat.theta_k[:, HOT_BLOCK] - truth[:, HOT_BLOCK]).mean()
+    centred_error = np.abs(centred.theta_k[:, HOT_BLOCK] - truth[:, HOT_BLOCK]).mean()
+    assert centred_error < flat_error
+    # and it is the middle of the block that gets fixed, not its rim: a uniform
+    # source is roughly right at the edges by construction, since the edges are
+    # pinned by measured board a pixel away.
+    core = _blob((22, 20), (3, 3))
+    rim = HOT_BLOCK & ~_blob((22, 20), (7, 7))
+    core_gain = (np.abs(flat.theta_k[:, core] - truth[:, core]).mean()
+                 - np.abs(centred.theta_k[:, core] - truth[:, core]).mean())
+    rim_gain = (np.abs(flat.theta_k[:, rim] - truth[:, rim]).mean()
+                - np.abs(centred.theta_k[:, rim] - truth[:, rim]).mean())
+    assert core_gain > 0.0
+    assert core_gain > rim_gain
+
+
+def test_centre_weighting_is_recorded_on_the_block_it_was_applied_to(die_board):
+    theta, times, mask, source = die_board
+    hot = _hot_id(mask)
+    result = rc.reconstruct_sequence(
+        theta, times, mask, source,
+        cooling_rate_per_s=COOLING_RATE_PER_S,
+        spread_rate_px2_per_s=SPREAD_RATE_PX2_PER_S,
+        ring_px=6, pixel_size_mm=0.5425, heat_source_ids=[hot],
+    )
+    shapes = {b.region_id: b.source_shape for b in result.blocks}
+    assert shapes[hot] == "centre-weighted"
+    assert set(shapes.values()) - {"centre-weighted"} == {"uniform"}
+    assert result.report["n_centre_weighted"] == 1
+
+
+def test_no_heat_source_ids_reproduces_the_uniform_fit_exactly(board):
+    """The ablation must be a true ablation, not a nearby variant."""
+    theta, times, mask, source = board
+    a = _fill(theta, times, mask, source)
+    b = rc.reconstruct_sequence(
+        theta, times, mask, source,
+        cooling_rate_per_s=COOLING_RATE_PER_S,
+        spread_rate_px2_per_s=SPREAD_RATE_PX2_PER_S,
+        ring_px=6, pixel_size_mm=0.5425, heat_source_ids=(),
+    )
+    assert np.array_equal(a.theta_k, b.theta_k)
+    assert a.report["n_centre_weighted"] == 0
+
+
+def test_an_id_that_names_no_block_is_refused(board):
+    """It used to do nothing at all.
+
+    judge_footprints labelled with 4-connectivity and reconstruct_sequence with 8,
+    so on a mask with a diagonal touch the ids disagreed and passing the edge
+    test's verdict through silently selected the wrong block, or none.
+    """
+    theta, times, mask, source = board
+    with pytest.raises(ValueError, match="name no block"):
+        rc.reconstruct_sequence(
+            theta, times, mask, source,
+            cooling_rate_per_s=COOLING_RATE_PER_S,
+            spread_rate_px2_per_s=SPREAD_RATE_PX2_PER_S,
+            ring_px=6, heat_source_ids=[99],
+        )
+
+
+def test_the_edge_test_and_the_fill_label_blocks_the_same_way():
+    """The driver joins their per-block tables on the region id."""
+    from tdp.thermal import sources as src
+
+    mask = np.zeros((30, 30), dtype=bool)
+    mask[5:10, 5:10] = True
+    mask[10:15, 10:15] = True  # touches the first block only at a corner
+    theta = np.zeros((30, 30))
+    verdicts = src.judge_footprints(theta, mask)
+    labels, count = rc.block_labels(mask)
+    assert count == 1, "8-connectivity must merge a diagonal touch"
+    assert {v.region_id for v in verdicts} <= set(range(1, count + 1))
+
+
+def test_the_figure_never_gives_contour_an_imshow_extent():
+    """imshow reads (0, W, H, 0) as (left, right, bottom, top); contour reads the
+    same tuple as (x0, x1, y0, y1) and maps row 0 to y = H.  Every block outline in
+    every panel came out mirrored top-to-bottom until 2026-08-29.
+    """
+    import pathlib
+    import re
+
+    text = pathlib.Path("scripts/figure_reconstruct.py").read_text()
+    for call in re.findall(r"contour\((?:[^()]|\([^()]*\))*\)", text, flags=re.S):
+        assert "extent" not in call, f"contour with an extent is mirrored: {call[:70]}"

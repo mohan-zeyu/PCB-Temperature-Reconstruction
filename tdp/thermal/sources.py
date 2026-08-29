@@ -867,7 +867,11 @@ def judge_footprints(
     if not inner_px[0] < inner_px[1] <= outer_px[0] < outer_px[1]:
         raise ValueError(f"rings must be ordered and disjoint, got {inner_px} and {outer_px}")
 
-    labels, n_labels = label(footprint_mask, structure=CROSS)
+    # The shared labelling, not a local one: the driver joins these verdicts to
+    # reconstruct_sequence's per-block source rates on the region id.
+    from tdp.thermal.reconstruct import block_labels
+
+    labels, n_labels = block_labels(footprint_mask)
     rows, cols = np.mgrid[0 : theta.shape[0], 0 : theta.shape[1]]
     on_board = np.zeros(theta.shape, dtype=bool)
     on_board[BORDER_MARGIN_PX:-BORDER_MARGIN_PX, BORDER_MARGIN_PX:-BORDER_MARGIN_PX] = True

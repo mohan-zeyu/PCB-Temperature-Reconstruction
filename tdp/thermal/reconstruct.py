@@ -9,8 +9,10 @@ Measured against ground truth: case17 is the same board painted matte black, so 
 components case10 has to guess at are *measured* there.  Imposing case10's mask on
 case17 and reconstructing the 39.5 % of the board it hides gives
 
-    edge-only fill, no source   4.34 K mean absolute error, bias -3.22 K
-    source-driven fill          2.72 K mean absolute error, bias +0.12 K
+    edge-only fill, no source   3.68 K mean absolute error, bias -2.10 K
+    source-driven, uniform      2.63 K mean absolute error, bias +0.01 K
+    source-driven, centre-      2.37 K mean absolute error, bias +0.37 K
+      weighted under a die
 
 The bias is the point.  The old fill was not merely noisy under a lid, it was
 systematically 3 K cold, every frame, in the same direction -- which is exactly the
@@ -66,24 +68,53 @@ block, not one per frame per block: with zero boundary data the solve is a fixed
 influence field per block, and the frame only enters through its Dirichlet ring.
 All 240 case10 frames reconstruct in about 5 s on a CPU.
 
+How the source is shaped inside a block
+---------------------------------------
+Not uniformly, where the block is known to generate heat.  A die under an SoC lid
+dissipates over a few mm and the lid spreads it over ten times that area, so a flat
+source over the whole 269 mm2 builds a plateau: about right at the block's edges,
+which are pinned by measured board a pixel away, and several kelvin cold in the
+middle.  Weighting the source by distance from the block's own rim matches the
+geometry and costs no extra parameter -- see :func:`_block_weight`.
+
+Measured on case17, applied only to the one block case10's edge test calls a heat
+source: that block's error falls 4.38 -> 2.51 K and its level bias -4.38 -> -1.83 K,
+the whole masked area 2.63 -> 2.37 K, and the worst change on any other block is
++0.03 K.  Choose the shape per block, not globally: concentrating *every* block
+gives 2.98 K, worse than uniform, because a connector bank really is distributed.
+
 What this cannot do, measured
 -----------------------------
 Fitting the source rates to case17's *hidden truth* instead of to the ring -- the
-best any per-block constant could do -- gives 1.55 K rather than 2.72 K, and that
-1.55 K is 1.53 K of shape against 0.19 K of level.  So:
+best any per-block constant could do -- gives 1.57 K, of which 1.56 K is shape and
+0.20 K level.  So no extra *source* parameter can help the pattern.
 
-* No extra *source* parameter can help.  With the levels fitted perfectly the
-  levels are already right to 0.19 K; what is left is that a uniform source makes a
-  smooth dome while the real blocks span 13-26 K inside.
-* The 1.2 K the ring fit gives away on top of that is not a conditioning problem
-  either.  The design matrix has condition number 81, and fitting each block on its
-  own ring sector, ridge-regularising, or plain least squares all land within
-  0.04 K of each other.  The ring simply does not carry more information about what
-  is under the lid than that.
+The ring fit gives away another ~1 K of *level* on top of that, and that is a real
+information limit rather than a numerical one, but the earlier claim here that it is
+"not a conditioning problem" was reasoned wrongly.  Three estimators agreeing to
+0.04 K shows they all extract the same information, not that the information is
+sufficient.  What actually sets the level error is the ring residual times the
+amplification: 1.87 K of residual against condition number 81.  Per-block level
+errors reach +-4.4 K and cancel to a board-wide bias near zero, so the aggregate
+bias hides them -- report the per-block level, not just the average.
 
-Both remaining deficits therefore have the same and only cure -- structure *inside*
-a block -- which this module deliberately does not use, because the reading there
-is wrong by an unknown emissivity factor.
+Reading structure *inside* a block was the obvious remaining source of information,
+and it was tried four ways and loses (all scored on case17, gain and reflection
+offset calibrated from the block's rim, never from truth):
+
+* add the pattern that grew over the run, which is free of reflection because a
+  fixed lid reflecting a fixed room is constant in time: 2.63 -> 2.44 K at the very
+  best, and mean absolute error does not move at all while a level offset dominates.
+* use only reflection-free time differences: 2.60 K.  97 % of the squared error is
+  static, so differences can only reach the other 3 %.
+* rebuild a block straight from its lid reading: 6.59 K, because the gain is
+  recoverable only to 20 % (worst 98 %) -- the only reference for the true
+  temperature under a block is the fill being corrected.
+* take only the level from the lid reading: 4.83 K.
+
+The last two fail for one structural reason: the lid's static reflection offset and
+the fill's own static level error are the same unknown, and the lid reading gives
+one static equation per block for the two of them.
 
 Units
 -----
@@ -96,6 +127,7 @@ the board.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
@@ -121,6 +153,17 @@ DEFAULT_SMOOTH_PX = 1.5
 # rate to within 15 %, while the 8-16 mm2 ones swing from -0.13 to -0.93 K/s.
 MIN_FITTABLE_PX = 12
 
+# How sharply a heat-source block's source is pushed toward its own middle.  A die
+# under a metal lid dissipates over a few mm and the lid spreads it, so the source
+# is nowhere near uniform over the 269 mm2 the lid covers; weighting it by distance
+# from the block's own rim matches that geometry and costs no extra parameter.
+# Measured on case17 with case10's mask imposed, concentrating only the blocks the
+# edge test calls heat sources: the SoC block's error falls 4.35 -> 2.50 K and the
+# whole masked area 2.62 -> 2.36 K, with the worst change on any other block
+# +0.03 K.  The optimum is flat -- 0.5 gives 2.43 K and 1.5 gives 2.40 K -- and
+# 2.0 is already too sharp (2.46 K, SoC back up to 3.16 K).
+CONCENTRATION_EXPONENT = 1.0
+
 
 @dataclass(frozen=True)
 class BlockSource:
@@ -138,6 +181,7 @@ class BlockSource:
     deepest_mm: float | None
     fitted: bool  # False => too small to fit, filled from its edges with no source
     touches_border: bool
+    source_shape: str = "uniform"  # or "centre-weighted"; see _block_weight
 
 
 @dataclass(frozen=True)
@@ -235,9 +279,47 @@ def plate_residual(
     )
 
 
-def _block_labels(footprint_mask: np.ndarray) -> tuple[np.ndarray, int]:
+def block_labels(footprint_mask: np.ndarray) -> tuple[np.ndarray, int]:
+    """The one labelling of low-emissivity blocks the whole package uses.
+
+    Public and shared on purpose.  ``judge_footprints`` and ``reconstruct_sequence``
+    report per-block results that the driver joins on the region id, and they used
+    to label independently -- 4-connectivity there, 8 here.  On case10 the two
+    happen to coincide, but on a mask with a diagonal touch they do not, and the
+    join then silently attaches one block's verdict to another's source rate.
+    """
     labels, count = label(np.asarray(footprint_mask, dtype=bool), structure=np.ones((3, 3)))
     return labels, int(count)
+
+
+_block_labels = block_labels  # kept so existing callers keep working
+
+
+def _block_weight(region: np.ndarray, concentrate: bool) -> np.ndarray:
+    """How one block's source is distributed inside it, scaled to average 1.
+
+    Passive blocks get a uniform source: they generate nothing, their apparent
+    excess comes from the board around them, and a flat term is the honest single
+    degree of freedom.  Blocks the edge test calls heat sources get a source that
+    peaks in the middle and falls to zero at the rim, because that is what a small
+    die under a heat-spreading lid looks like.  A uniform source over a 269 mm2
+    lid instead makes a flat-topped plateau, which is why the SoC came out ~4 K
+    cold at its centre while its edges were roughly right.
+
+    Averaging to 1 keeps the fitted coefficient meaning the same thing either way
+    -- the block's *mean* source rate in K/s -- so the numbers stay comparable
+    between blocks and against the earlier uniform-only run.
+    """
+    inside = np.asarray(region, dtype=bool)
+    if not concentrate:
+        return np.where(inside, 1.0, 0.0)
+    # Distance to this block's own rim, not to the nearest trusted pixel: a
+    # neighbouring block must not count as interior.
+    depth = distance_transform_edt(inside) ** CONCENTRATION_EXPONENT
+    mean = float(depth[inside].mean())
+    if mean <= 0.0:
+        return np.where(inside, 1.0, 0.0)
+    return np.where(inside, depth / mean, 0.0)
 
 
 def _influence_fields(
@@ -246,6 +328,7 @@ def _influence_fields(
     ids: list[int],
     spread_rate_px2_per_s: float,
     spread_distance_px: float,
+    concentrated: frozenset[int] = frozenset(),
 ) -> np.ndarray:
     """Temperature each block raises, per unit of its source rate, with no boundary data.
 
@@ -256,9 +339,10 @@ def _influence_fields(
     zero = np.zeros(unknown.shape, dtype=np.float64)
     fields = np.empty((len(ids),) + unknown.shape, dtype=np.float64)
     for slot, region_id in enumerate(ids):
-        source = np.zeros(unknown.shape, dtype=np.float64)
-        source[labels == region_id] = 1.0 / spread_rate_px2_per_s
-        fields[slot] = solve_plate(zero, unknown, spread_distance_px, source=source)
+        weight = _block_weight(labels == region_id, region_id in concentrated)
+        fields[slot] = solve_plate(
+            zero, unknown, spread_distance_px, source=weight / spread_rate_px2_per_s
+        )
     return fields
 
 
@@ -274,6 +358,7 @@ def reconstruct_sequence(
     board_mask: np.ndarray | None = None,
     pixel_size_mm: float | None = None,
     min_fittable_px: int = MIN_FITTABLE_PX,
+    heat_source_ids: Iterable[int] = (),
 ) -> Reconstruction:
     """Fill every low-emissivity block, in every frame, from a fitted source rate.
 
@@ -289,6 +374,13 @@ def reconstruct_sequence(
     ``heating_rate_k_per_s`` is used only on the held-out ring, where it is
     measured.  Its values inside the blocks are ignored -- they are the ones this
     routine exists to replace.
+
+    ``heat_source_ids`` are the region ids the Stage 1 edge test judged to be
+    generating heat.  Those blocks get a centre-weighted source instead of a
+    uniform one; see ``_block_weight``.  Pass only confident calls: a block wrongly
+    left uniform costs 0.03 K, while a passive block wrongly concentrated costs
+    several kelvin, so the asymmetry runs strongly against false positives.  With
+    the default empty set the result is identical to the uniform-only fit.
     """
     theta_k = np.asarray(theta_k, dtype=np.float64)
     times_s = np.asarray(times_s, dtype=np.float64)
@@ -323,8 +415,16 @@ def reconstruct_sequence(
     unknown_fit = footprint_mask | ring
 
     warming = warming_rate(theta_k, times_s)
+    asked = frozenset(int(i) for i in heat_source_ids)
+    unknown_ids = asked - set(range(1, count + 1))
+    if unknown_ids:
+        raise ValueError(
+            f"heat_source_ids {sorted(unknown_ids)} name no block; this mask has "
+            f"{count}.  Label with tdp.thermal.block_labels so the ids agree."
+        )
+    concentrated = asked & set(fittable)
     fit_influence = _influence_fields(
-        unknown_fit, labels, fittable, spread_rate_px2_per_s, spread_distance_px
+        unknown_fit, labels, fittable, spread_rate_px2_per_s, spread_distance_px, concentrated
     )
     design = fit_influence[:, ring].T  # (n_ring, n_blocks)
     solver = np.linalg.pinv(design)
@@ -346,7 +446,7 @@ def reconstruct_sequence(
     # Production fill: the ring is *not* held out, so every trusted pixel is used
     # as boundary data.  Only the fitted sources carry over from the fit.
     production_influence = _influence_fields(
-        footprint_mask, labels, fittable, spread_rate_px2_per_s, spread_distance_px
+        footprint_mask, labels, fittable, spread_rate_px2_per_s, spread_distance_px, concentrated
     )
     out = theta_k.copy()
     for index in range(n_frames):
@@ -389,6 +489,7 @@ def reconstruct_sequence(
                 deepest_mm=None if pixel_size_mm is None else float(depth[region].max()) * pixel_size_mm,
                 fitted=was_fitted,
                 touches_border=touches,
+                source_shape="centre-weighted" if region_id in concentrated else "uniform",
             )
         )
 
@@ -402,6 +503,8 @@ def reconstruct_sequence(
         "spread_distance_mm": None if pixel_size_mm is None else spread_distance_px * pixel_size_mm,
         "ring_error_median_k": float(np.median(ring_error)),
         "ring_error_no_source_median_k": float(np.median(ring_error_no_source)),
+        "n_centre_weighted": len(concentrated),
+        "concentration_exponent": CONCENTRATION_EXPONENT if concentrated else None,
     }
     return Reconstruction(
         theta_k=out,

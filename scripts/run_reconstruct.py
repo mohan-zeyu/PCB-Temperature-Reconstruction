@@ -33,6 +33,12 @@ def main() -> int:
     parser.add_argument("--halo-px", type=int, default=1)
     parser.add_argument("--ring-px", type=int, default=8)
     parser.add_argument("--outdir", default=None)
+    parser.add_argument(
+        "--uniform-sources",
+        action="store_true",
+        help="spread every block's source uniformly, the pre-2026-08-29 behaviour;"
+        " the ablation for the centre-weighted source",
+    )
     args = parser.parse_args()
 
     source = Path("outputs/dynamic_inverse") / args.sequence / "latest" / "temperature_corrected_sequence.npz"
@@ -65,6 +71,17 @@ def main() -> int:
         method="rise",
     ).rate_k_per_s
 
+    # The edge test runs first: which blocks generate heat decides how each one's
+    # source is shaped inside it, and only confident "heat source" calls are used.
+    # A source block left uniform costs 0.03 K; a passive block wrongly
+    # concentrated costs several kelvin, so only the top verdict qualifies.
+    verdicts = {
+        v.region_id: v
+        for v in th.judge_footprints(theta[reference], footprints, pixel_size_mm=PIXEL_SIZE_MM)
+    }
+    heat_source_ids = [i for i, v in verdicts.items() if v.verdict == "heat source"]
+    print(f"  edge test calls {len(heat_source_ids)} block(s) a heat source: {heat_source_ids}")
+
     result = th.reconstruct_sequence(
         theta[:n_powered],
         times[:n_powered],
@@ -75,6 +92,7 @@ def main() -> int:
         ring_px=args.ring_px,
         board_mask=board,
         pixel_size_mm=PIXEL_SIZE_MM,
+        heat_source_ids=() if args.uniform_sources else heat_source_ids,
     )
     report = result.report
     print(f"  spread distance {report['spread_distance_mm']:.2f} mm")
@@ -84,7 +102,6 @@ def main() -> int:
         f"  (with every source set to zero: {report['ring_error_no_source_median_k']:.3f} K)"
     )
 
-    verdicts = {v.region_id: v for v in th.judge_footprints(theta[reference], footprints, pixel_size_mm=PIXEL_SIZE_MM)}
     spots = th.cross_check(
         th.find_hotspots(
             th.measure_heating_rate(
@@ -129,7 +146,7 @@ def main() -> int:
             ["kind", "id", "area_mm2", "row_mm", "col_mm", "deepest_mm",
              "source_rate_k_per_s", "source_rate_scatter_k_per_s",
              "edge_test_verdict", "edge_test_outward_fraction", "edge_test_gradient_k",
-             "confidence_sd", "touches_border"]
+             "confidence_sd", "touches_border", "source_shape"]
         )
         for block in sorted(result.blocks, key=lambda b: -b.source_rate_k_per_s):
             verdict = verdicts.get(block.region_id)
@@ -142,13 +159,13 @@ def main() -> int:
                 verdict.verdict if verdict else "not judged",
                 f"{verdict.outward_fraction:.2f}" if verdict else "",
                 f"{verdict.mean_gradient_k:.2f}" if verdict else "",
-                "", block.touches_border,
+                "", block.touches_border, block.source_shape,
             ])
         for spot in spots:
             writer.writerow([
                 "board hot spot", spot.rank, "", f"{spot.row_mm:.1f}", f"{spot.col_mm:.1f}",
                 "0.0", f"{spot.heating_rate_k_per_s:.4f}", "", "", "", "",
-                f"{spot.confidence_sd:+.1f}" if spot.confidence_sd is not None else "", False,
+                f"{spot.confidence_sd:+.1f}" if spot.confidence_sd is not None else "", False, "",
             ])
 
     (outdir / "reconstruction_report.json").write_text(
@@ -170,14 +187,14 @@ def main() -> int:
     )
     print(f"\n  wrote {outdir}/reconstructed_sequence.npz ({n_powered} frames), hotspots.csv, reconstruction_report.json")
 
-    print("\n block   area mm2   centre mm     deepest   source K/s   scatter   edge test")
+    print("\n block   area mm2   centre mm     deepest   source K/s   scatter   edge test        source shape")
     for block in sorted(result.blocks, key=lambda b: -b.source_rate_k_per_s):
         verdict = verdicts.get(block.region_id)
         print(
-            "   %2d     %7.1f   (%4.1f,%4.1f)   %5.1f mm    %+.4f     %.4f    %s"
+            "   %2d     %7.1f   (%4.1f,%4.1f)   %5.1f mm    %+.4f     %.4f    %-14s  %s"
             % (block.region_id, block.area_mm2, block.centroid_mm[0], block.centroid_mm[1],
                block.deepest_mm, block.source_rate_k_per_s, block.source_rate_spread_k_per_s,
-               verdict.verdict if verdict else "not judged")
+               verdict.verdict if verdict else "not judged", block.source_shape)
         )
     return 0
 
