@@ -7,8 +7,9 @@ Three stages, in order:
 2. :mod:`tdp.thermal.reconstruct` -- build a full temperature map for every frame,
    driven by those sources rather than interpolated from footprint edges.  Checked
    against case17, where the components case10 must guess at are measured.
-3. :mod:`tdp.thermal.patterns` / :mod:`tdp.thermal.model` -- forecast forward from
-   any moment.
+3. :mod:`tdp.thermal.patterns` / :mod:`tdp.thermal.forecast` -- compress the
+   reconstructed field into fixed physical patterns and forecast forward from
+   any moment with a closed-form plate solve.
 
 Everything here is relative. The governing equation has been divided by the areal
 heat capacity, which is what makes the remaining quantities measurable from a
@@ -19,6 +20,7 @@ board, so even ratios between hot spots are not power ratios.
 
 from tdp.thermal.reconstruct import (
     BlockSource,
+    InteriorTemperatureAnchor,
     Reconstruction,
     TruthCheck,
     heating_rate_from_reconstruction,
@@ -27,6 +29,33 @@ from tdp.thermal.reconstruct import (
     reconstruct_sequence,
     validate_against_truth,
     warming_rate,
+)
+from tdp.thermal.forecast import (
+    ClosedFormPlateModel,
+    ReconstructionArchive,
+    load_reconstruction_archive,
+)
+from tdp.thermal.patterns import (
+    PatternLibrary,
+    build_pattern_library,
+    gaussian_source_shape,
+    load_pattern_library,
+    plate_laplacian,
+    steady_source_response,
+)
+from tdp.thermal.presentation import (
+    model_range_fields,
+    nearest_sample_indices,
+    weighted_mae_by_frame,
+)
+from tdp.thermal.train_forecast import (
+    EquilibriumForecastFit,
+    FrozenForecastSplit,
+    SourceHistoryFit,
+    fit_equilibrium_forecast,
+    fit_source_histories,
+    make_frozen_split,
+    rollout_to_equilibrium,
 )
 from tdp.thermal.sources import (
     ASSUMED_EMISSIVITY,
@@ -52,27 +81,47 @@ __all__ = [
     "ASSUMED_EMISSIVITY",
     "BAND_EXPONENT",
     "BlockSource",
+    "ClosedFormPlateModel",
+    "InteriorTemperatureAnchor",
     "Reconstruction",
     "TruthCheck",
     "CoolingFit",
+    "EquilibriumForecastFit",
     "FootprintVerdict",
+    "FrozenForecastSplit",
     "HeatingRateMap",
     "Hotspot",
     "LoadDrop",
+    "PatternLibrary",
+    "ReconstructionArchive",
     "SpreadFit",
+    "SourceHistoryFit",
     "cooling_rate_map",
     "cross_check",
     "emissivity_gain",
     "find_hotspots",
     "find_load_drop",
     "fit_cooling_rate",
+    "fit_equilibrium_forecast",
+    "fit_source_histories",
     "fit_spread_rate",
+    "gaussian_source_shape",
     "heating_rate_from_reconstruction",
     "judge_footprints",
+    "load_reconstruction_archive",
+    "load_pattern_library",
     "measure_heating_rate",
+    "model_range_fields",
+    "make_frozen_split",
+    "nearest_sample_indices",
     "plate_residual",
+    "plate_laplacian",
     "block_labels",
     "reconstruct_sequence",
+    "rollout_to_equilibrium",
+    "build_pattern_library",
+    "steady_source_response",
     "validate_against_truth",
+    "weighted_mae_by_frame",
     "warming_rate",
 ]

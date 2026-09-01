@@ -60,8 +60,10 @@ give the evidence, and let the owner decide.
 - **Ignore the cooling phase.** Only the powered stretch is used: frames 0-239 on
   case10, 0 to 1498 s. Reconstruct those 240 frames; nothing after the load stops.
 - **Forward prediction only**, and it must be able to start from *any* moment.
-- **Infrared images only.** No CPU-load or system log is an input. `soc_log_100.csv`
-  may appear as a held-out scoreboard line, never as an input.
+- **Infrared images are the default input.** No CPU-load or system log is used in
+  the case10 reconstruction. A separate, optional
+  `InteriorTemperatureAnchor` interface exists for boards that expose a corrected
+  central temperature; it is not used in the case10 benchmark.
 - **Relative only — no watts, ever.** See "Units" below.
 - **Plain language, never Greek symbols.** See "Naming" below.
 - Board state is represented by a small **pattern library** with a closed-form
@@ -76,10 +78,10 @@ computation. The approved plan therefore trains locally and keeps `--device` plu
 A self-contained export is still built so a run is reproducible off-machine. **If the
 model grows, revisit this rather than assuming it still holds.**
 
-## Where the work is (2026-08-29, Stage 2 done and refined)
+## Where the work is (2026-08-30, Stage 3c presentation done)
 
 Full status, measured constants and the ordered remaining steps live in
-`~/.claude/plans/now-i-need-you-snoopy-kazoo.md` — **read its STATUS block before
+`now-i-need-you-snoopy-kazoo.md` — **read its STATUS block before
 starting anything.** Short version:
 
 **Done** — `tdp/thermal/sources.py`: the load stop is found from the images (frame 239
@@ -88,18 +90,50 @@ and heat sources are found in two parts. On case10 that gives one heat-source bl
 (the SoC, 269 mm² at (26.1, 32.7) mm, 100 % outward) and one trusted-board hot spot at
 (17.9, 10.3) mm. Figure: `outputs/thermal/case10/phase1_sources.png`.
 
-**Next** — `tdp/thermal/reconstruct.py`: fill the 12 untrustworthy blocks by solving the
-plate equation with the measured heating rate injected, reusing
-`tdp.data.emissivity.solve_plate` unchanged (it already accepts `source=`; its
-right-hand side is heating rate ÷ spread rate). Output 240 reconstructed frames.
+**Done** — `tdp/thermal/reconstruct.py`: all 240 powered frames are reconstructed.
+Passive blocks use the ring-fitted source solution; the SoC uses a positive broad
+source in one smooth plate solve across its footprint and transition rim. The saved
+archive includes both the provisional ring-fit and final reconstruction source series,
+the complete rebuilt mask, and a per-pixel model-uncertainty range.
 
-**Then** — pattern library + closed-form solver (no learning yet) → self-contained
-export → train the forecasting model → figures, video, report, ablations.
+**Done** — `tdp/thermal/patterns.py` + `tdp/thermal/forecast.py`: the fixed library uses
+64 slow plate modes and source responses for the broad background, SoC footprint and
+trusted-board hot spot at four trial spread rates. Pivoted QR leaves 72 independent
+patterns from 76 candidates. The fine-grid source-response gate is below 1e-10 K against a
+0.10 K limit. The reduced plate advances by matrix exponential over any positive time
+gap and solves its settled state directly. Stage 2 uncertainty becomes an observation
+weight, never measurement confidence. An arbitrary starting frame is exact at time zero;
+detail outside the fixed basis is carried as an explicit initial residual.
 
-**The three deliverables** — deliverable 1 (a reconstructed image for every one of the
-240 powered frames) and deliverable 3 (`hotspots.csv`) are **done**. Deliverable 2 (a
-forward prediction from any named frame through to the settled state at 1-second steps)
-needs the pattern library and the forecasting model.
+**Done** — `tdp/thermal/train_forecast.py`: the export and time split are frozen, with
+three-frame guard gaps around contiguous validation and test blocks. The intuitive fit of
+three non-negative, smooth source histories was tested and rejected: it scores 2.145 K
+weighted test MAE against 0.270 K persistence because three source channels cannot balance
+all 72 board modes. Keep this result as the source-only ablation; do not rescue it with a
+large unconstrained signed correction.
+
+**Done** — the production forecast decays deviations toward a settled full field estimated
+only from the final training block, frames 147-188. It keeps the named starting frame exact,
+uses the stable reduced plate operator, and retains the measured spread 2.0 px^2/s and
+cooling 0.006851 /s under a 0.01 K parsimony rule. It scores 0.185 K validation and 0.191 K
+held-out test weighted MAE, beating persistence. Run `python scripts/run_forecast_fit.py`,
+then `python scripts/run_forecast.py --start-frame N`; the default frame-0 artifact has 674
+one-second fields through less than 1% remaining deviation.
+
+**Done** — `scripts/figure_forecast.py`: the fixed 1280x720 H.264 presentation contains
+all 674 one-second forecast fields at 24 fps, plus temperature, remaining deviation, model
+range, captured-frame error, and error-curve panels. The saved-field ablation figure reports
+equilibrium 0.191 K, persistence 0.270 K, constant source 1.774 K, smooth positive sources
+2.145 K, and no source 15.336 K. It never refits the model. MP4 failure falls back to a
+sampled GIF; the montage and arrays are always written.
+
+**Then** — do not tune case10 further on its held-out test. New accuracy work needs new
+evidence: another painted/truth board or a corrected central-temperature sensor on hardware
+that exposes one. The old `tdp.dynamic_inverse` path remains a legacy comparison and does
+not silently consume Stage 2 estimates.
+
+**The three numerical deliverables are done** — 240 reconstructed powered frames, a
+forward one-second forecast from any named frame, and `hotspots.csv`.
 
 ### What Stage 2 measured, and where it stops
 
@@ -110,13 +144,14 @@ are *measured* there. Imposing case10's mask and rebuilding the 39.5% it hides:
 |---|---|---|
 | edge-only fill (the old way) | 3.68 K | **−2.10 K**, cold every frame |
 | source-driven, source spread uniformly over each block | 2.63 K | **+0.01 K** |
-| source-driven, **centre-weighted where the edge test says the block makes heat** | **2.37 K** | +0.37 K |
+| provisional **centre-weighted** source shape | **2.37 K** | +0.37 K |
+| final **broad-source plate** lid | **2.29 K** | +0.37 K |
 
 Killing that systematic cold bias is the point of the whole stage. **These numbers replace
 an earlier table here that read 4.34 / −3.22 / 2.72 / +0.12 K; those were stale and did not
 match what the code produced.** Docstring, figure and this file now all report the same run.
 
-The remaining 2.4 K splits into a **wrong level** and a **wrong pattern** inside each block:
+The remaining 2.29 K splits into a **wrong level** and a **wrong pattern** inside each block:
 
 - Fitting each block's source to case17's *hidden truth* — the best any single number per
   block can do — leaves 1.57 K, of which 1.56 K is pattern and 0.20 K level. **No extra
@@ -151,6 +186,34 @@ Choose the shape **per block from the edge test**, never globally:
   outward over 22 of 24 sectors.
 
 `--uniform-sources` on `scripts/run_reconstruct.py` is the ablation.
+
+### The final lid shape is now a broad-source plate solve (2026-08-30)
+
+The owner rejected the centre-weighted bell as the final visible temperature of a
+heat-spreading lid. case17 confirms the problem: at frame 120 it is 0.76 K cold at the
+SoC edge, 3.75 K cold 4-5 px inside, and 3.83 K hot at the centre. The fitted bell is now
+used only to retain the exterior-ring estimate of the block's **mean level**.
+
+For a confidently heat-producing lid, the production fill first takes one extra rim pixel
+into an explicit `lid_transition_mask`; case10's nominally trusted first ring is still 0.5 K
+colder than the second and is residual lid-rim contamination. The original footprint and
+this rim are then solved as one plate domain with a non-negative source distributed over
+the lid. Its amplitude is chosen per frame to preserve the provisional footprint mean.
+There is no pasted curve, blending band, or exactly flat core: the broad plateau and its
+transition to the measured board are generated by the same conduction-and-cooling
+equation. On case17 this changes the SoC error **2.51 -> 1.99 K** and the original
+masked area **2.37 -> 2.29 K**; including the rebuilt rim gives **2.26 K**. On case10
+frame 200 the result is still unmistakably source-driven: the SoC core is **41.66 K**
+above ambient against **29.45 K** for a source-free solve. The source-shaped result
+remains the ablation and one side of the reported model range.
+
+Every reconstruction now reports a per-pixel uncertainty range. It is explicitly a
+**model range, not a statistical confidence interval**: held-out-ring error enlarged by
+distance, plus disagreement between the provisional central-source and final broad-source
+plate solutions. An optional
+`InteriorTemperatureAnchor` supplies a frame-aligned central surface temperature and its
+uncertainty. `vcgencmd` measures the die, not the lid surface, so a die-to-surface
+difference must be removed or included in that uncertainty.
 
 ### Reading the pattern under a lid: tried four ways, all lose
 
@@ -331,7 +394,7 @@ correct it.
 ## Commands
 
 ```bash
-python -m pytest tests/ -q                                       # 71 tests, ~41 s
+python -m pytest tests/ -q                                       # 92 tests, ~38 s
 python -m tdp.dynamic_inverse run --smoke --sequence case10_rpi4b_bare_full
 ```
 
@@ -344,3 +407,57 @@ Mixing them makes an ablation look like a re-measurement.
 Module docstrings explain *why* a choice was made and what it prevents; comments carry
 measured evidence rather than restating the code; every reported quantity carries its
 unit.
+
+
+
+### The initial plan of the project is in `now-i-need-you-snoopy-kazoo.md`
+
+## For token usage
+
+First of all, make sure tasks completed with quality and quantity guaranteed
+
+### Token-efficient tool usage
+
+- Search before reading. Use Glob, Grep, or `rg` to identify candidate files,
+  symbols, and line numbers before opening files.
+- For large, generated, minified, or unfamiliar files, use Read with
+  `offset` and `limit`. Start with the relevant range and enough surrounding
+  context; expand only when necessary.
+- Read small source and configuration files completely when their overall
+  structure affects correctness.
+- Do not re-read unchanged content already present in the active context.
+  After an edit, inspect the diff or changed ranges instead of rereading the
+  entire file. Re-read when exact text is required or context was compacted.
+- Prefer dedicated Glob, Grep, Read, and Edit tools over Bash equivalents when
+  they can retrieve the required information more precisely.
+- Use `rg --files` or a targeted directory listing instead of recursive `ls`
+  or unrestricted `find`.
+
+#### Command output
+
+- Anticipate noisy commands. Use quiet, concise, or summary options provided by
+  the command before applying generic truncation.
+- Do not place complete build logs, test logs, dependency trees, recursive
+  listings, or large JSON responses into the conversation.
+- Filter known structured output using targeted tools such as `rg`, `jq`,
+  `head`, or `tail`, and impose reasonable result limits.
+- Never truncate a command's output before preserving information needed to
+  determine success or diagnose failure.
+- For potentially noisy builds and tests, save complete stdout and stderr to a
+  temporary log, preserve the original exit status, and initially inspect only:
+  1. the command summary,
+  2. matched errors or failed tests, and
+  3. a short tail of the log.
+- If the result is unsuccessful or ambiguous, inspect additional targeted
+  ranges from the saved log. Do not rerun a command merely to recover output
+  that was discarded.
+- Never infer success from the absence of errors in filtered output. Check the
+  original command's exit status.
+
+#### Responses
+
+- Summarize tool results instead of repeating them.
+- Reference file paths and relevant line ranges rather than reproducing large
+  sections already available in files.
+- Keep progress updates and final responses concise unless the user requests a
+  detailed explanation.

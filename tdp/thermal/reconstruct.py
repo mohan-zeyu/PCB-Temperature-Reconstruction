@@ -11,8 +11,9 @@ case17 and reconstructing the 39.5 % of the board it hides gives
 
     edge-only fill, no source   3.68 K mean absolute error, bias -2.10 K
     source-driven, uniform      2.63 K mean absolute error, bias +0.01 K
-    source-driven, centre-      2.37 K mean absolute error, bias +0.37 K
-      weighted under a die
+    provisional centre-         2.37 K mean absolute error, bias +0.37 K
+      weighted source
+    broad-source plate lid      2.29 K mean absolute error, bias +0.37 K
 
 The bias is the point.  The old fill was not merely noisy under a lid, it was
 systematically 3 K cold, every frame, in the same direction -- which is exactly the
@@ -68,20 +69,28 @@ block, not one per frame per block: with zero boundary data the solve is a fixed
 influence field per block, and the frame only enters through its Dirichlet ring.
 All 240 case10 frames reconstruct in about 5 s on a CPU.
 
-How the source is shaped inside a block
----------------------------------------
-Not uniformly, where the block is known to generate heat.  A die under an SoC lid
-dissipates over a few mm and the lid spreads it over ten times that area, so a flat
-source over the whole 269 mm2 builds a plateau: about right at the block's edges,
-which are pinned by measured board a pixel away, and several kelvin cold in the
-middle.  Weighting the source by distance from the block's own rim matches the
-geometry and costs no extra parameter -- see :func:`_block_weight`.
+How a heat-producing lid is shaped
+----------------------------------
+The distance-weighted source remains useful as a *provisional* solve: the exterior
+ring can constrain the block's mean level, and centre weighting improved that level
+over a uniform source.  It cannot determine the internal pattern.  On case17 the
+imposed bell was several kelvin cold through the broad area around the SoC and hot
+at the very centre -- a small die and a spreading lid had been collapsed into one
+plate domain.
 
-Measured on case17, applied only to the one block case10's edge test calls a heat
-source: that block's error falls 4.38 -> 2.51 K and its level bias -4.38 -> -1.83 K,
-the whole masked area 2.63 -> 2.37 K, and the worst change on any other block is
-+0.03 K.  Choose the shape per block, not globally: concentrating *every* block
-gives 2.98 K, worse than uniform, because a connector bank really is distributed.
+The production lid fill therefore preserves the provisional block mean but replaces
+its shape with one physical plate solution.  A positive source is distributed over
+the whole SoC footprint, and its amplitude is chosen so that the solved footprint
+has the fitted mean.  The solve includes one extra rim pixel because the nominally
+trusted first ring on case10 is still cold.  There is no pasted curve or flat core:
+the broad plateau, its remaining curvature, and the transition into the board all
+come from the same discrete conduction equation.  Across all case17 powered frames
+this changes the SoC error 2.51 -> about 1.99 K and the original masked area
+2.37 -> about 2.29 K without removing the source-driven plateau.  See
+:func:`_broad_source_lids`.
+
+The old source-shaped result is kept as the alternative model in the reported
+uncertainty range.  It can also be requested directly as an ablation.
 
 What this cannot do, measured
 -----------------------------
@@ -167,21 +176,54 @@ CONCENTRATION_EXPONENT = 1.0
 
 @dataclass(frozen=True)
 class BlockSource:
-    """One low-emissivity block's fitted source rate, in K/s."""
+    """One block's provisional ring fit and source used by the final solve.
+
+    ``source_rate_*`` retains the exterior-ring fit because it is the measured
+    diagnostic. ``reconstruction_source_rate_*`` records the rate that actually
+    generated ``Reconstruction.theta_k``; the two differ when a hot lid changes
+    from the provisional centre-weighted shape to the final broad source.
+    """
 
     region_id: int
     area_px: int
     area_mm2: float | None
     centroid_rc: tuple[float, float]
     centroid_mm: tuple[float, float] | None
-    source_rate_k_per_s: float  # median over frames of (heating rate - warming rate)
-    source_rate_by_frame: np.ndarray  # (T,)
+    source_rate_k_per_s: float  # median ring-fitted provisional (heating - warming)
+    source_rate_by_frame: np.ndarray  # (T,) ring-fitted provisional rate
     source_rate_spread_k_per_s: float  # frame-to-frame scatter, 16th-84th percentile
     deepest_px: float  # furthest any pixel is from trusted board
     deepest_mm: float | None
     fitted: bool  # False => too small to fit, filled from its edges with no source
     touches_border: bool
     source_shape: str = "uniform"  # or "centre-weighted"; see _block_weight
+    interior_fill: str = "source-shaped"
+    reconstruction_source_rate_k_per_s: float | None = None  # rate used by final plate solve
+    reconstruction_source_rate_by_frame: np.ndarray | None = None  # (T,)
+    reconstruction_source_rate_spread_k_per_s: float | None = None
+
+
+@dataclass(frozen=True)
+class InteriorTemperatureAnchor:
+    """Optional measured central temperature for one low-emissivity footprint.
+
+    ``temperature_above_ambient_k_by_frame`` must already be aligned to the IR
+    timestamps and have one value per reconstructed frame.  A caller using
+    ``vcgencmd measure_temp`` must subtract ambient first.  That command reports
+    the die rather than the visible lid surface, so its die-to-surface difference
+    must also be removed before it is supplied here; if that difference is not
+    known, include it in ``uncertainty_k`` rather than treating the die reading as
+    an exact surface temperature.
+
+    The anchor fixes the mean of the broad central area, not one isolated pixel.
+    The plate solve still determines every individual pixel, avoiding both a
+    nonphysical point singularity and a pasted flat core.
+    """
+
+    region_id: int
+    temperature_above_ambient_k_by_frame: np.ndarray
+    uncertainty_k: float | np.ndarray
+    label: str = ""
 
 
 @dataclass(frozen=True)
@@ -190,18 +232,27 @@ class Reconstruction:
 
     theta_k: np.ndarray  # (T, H, W) kelvin above ambient; trusted pixels unchanged
     times_s: np.ndarray  # (T,)
-    unknown_mask: np.ndarray  # (H, W) the pixels this module wrote
+    unknown_mask: np.ndarray  # (H, W) original low-emissivity footprint mask
     blocks: list[BlockSource]
     spread_rate_px2_per_s: float
     cooling_rate_per_s: float
     spread_distance_px: float
     ring_error_k: np.ndarray  # (T,) held-out ring error, per frame
     ring_error_no_source_k: np.ndarray  # (T,) the same ring with every source set to zero
+    uncertainty_k: np.ndarray | None = None  # (T,H,W), model range; not a confidence interval
+    lid_transition_mask: np.ndarray | None = None  # extra rim pixels replaced only around hot lids
     report: dict[str, Any] = field(default_factory=dict)
 
     @property
     def spread_distance_mm(self) -> float | None:
         return self.report.get("spread_distance_mm")
+
+    @property
+    def rebuilt_mask(self) -> np.ndarray:
+        """Every pixel replaced in ``theta_k``, including a hot-lid transition rim."""
+        if self.lid_transition_mask is None:
+            return self.unknown_mask
+        return self.unknown_mask | self.lid_transition_mask
 
 
 def warming_rate(
@@ -298,13 +349,12 @@ _block_labels = block_labels  # kept so existing callers keep working
 def _block_weight(region: np.ndarray, concentrate: bool) -> np.ndarray:
     """How one block's source is distributed inside it, scaled to average 1.
 
-    Passive blocks get a uniform source: they generate nothing, their apparent
-    excess comes from the board around them, and a flat term is the honest single
-    degree of freedom.  Blocks the edge test calls heat sources get a source that
-    peaks in the middle and falls to zero at the rim, because that is what a small
-    die under a heat-spreading lid looks like.  A uniform source over a 269 mm2
-    lid instead makes a flat-topped plateau, which is why the SoC came out ~4 K
-    cold at its centre while its edges were roughly right.
+    Passive blocks use a uniform term: their apparent excess comes from the board
+    around them, and one spatially constant degree of freedom is the honest fit.
+    For heat-source blocks, the *provisional ring fit* peaks toward the middle to
+    represent a small die under a much larger lid.  That improves the level inferred
+    from the exterior ring.  Production later discards this assumed internal shape
+    and solves the lid with a separate broad distributed source.
 
     Averaging to 1 keeps the fitted coefficient meaning the same thing either way
     -- the block's *mean* source rate in K/s -- so the numbers stay comparable
@@ -346,6 +396,253 @@ def _influence_fields(
     return fields
 
 
+def _edge_profile_samples(
+    region: np.ndarray, trusted: np.ndarray
+) -> list[tuple[np.ndarray, ...]]:
+    """Indices for two trusted and two interior pixels along each usable normal.
+
+    The order along a sample is ``outside2, outside1, inside1, inside2``.  It
+    supplies the two one-sided slopes the old Dirichlet-only fill ignored.
+    Samples that hit another footprint, leave the board, or have no second
+    interior pixel are omitted.
+    """
+    height, width = region.shape
+    rows, cols = np.nonzero(region)
+    samples: list[tuple[np.ndarray, ...]] = []
+    for d_row, d_col in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        outside1_r, outside1_c = rows + d_row, cols + d_col
+        outside2_r, outside2_c = rows + 2 * d_row, cols + 2 * d_col
+        inside2_r, inside2_c = rows - d_row, cols - d_col
+        in_frame = (
+            (outside2_r >= 0)
+            & (outside2_r < height)
+            & (outside2_c >= 0)
+            & (outside2_c < width)
+            & (outside1_r >= 0)
+            & (outside1_r < height)
+            & (outside1_c >= 0)
+            & (outside1_c < width)
+            & (inside2_r >= 0)
+            & (inside2_r < height)
+            & (inside2_c >= 0)
+            & (inside2_c < width)
+        )
+        arrays = [
+            item[in_frame]
+            for item in (
+                rows,
+                cols,
+                inside2_r,
+                inside2_c,
+                outside1_r,
+                outside1_c,
+                outside2_r,
+                outside2_c,
+            )
+        ]
+        inside1_r, inside1_c, inside2_r, inside2_c, outside1_r, outside1_c, outside2_r, outside2_c = arrays
+        usable = (
+            region[inside2_r, inside2_c]
+            & trusted[outside1_r, outside1_c]
+            & trusted[outside2_r, outside2_c]
+        )
+        if usable.any():
+            samples.append(tuple(item[usable] for item in arrays))
+    return samples
+
+
+def _anchor_arrays(
+    anchors: Iterable[InteriorTemperatureAnchor], n_frames: int, valid_ids: set[int]
+) -> dict[int, tuple[np.ndarray, np.ndarray, str]]:
+    """Validate optional lid temperatures and return frame-aligned arrays."""
+    out: dict[int, tuple[np.ndarray, np.ndarray, str]] = {}
+    for item in anchors:
+        region_id = int(item.region_id)
+        if region_id not in valid_ids:
+            raise ValueError(
+                f"interior anchor names block {region_id}, but reconstructed lids are "
+                f"{sorted(valid_ids)}"
+            )
+        if region_id in out:
+            raise ValueError(f"more than one interior anchor supplied for block {region_id}")
+        values = np.asarray(item.temperature_above_ambient_k_by_frame, dtype=np.float64)
+        if values.shape != (n_frames,) or not np.isfinite(values).all():
+            raise ValueError(
+                f"anchor for block {region_id} needs {n_frames} finite temperatures, "
+                f"got {values.shape}"
+            )
+        uncertainty = np.asarray(item.uncertainty_k, dtype=np.float64)
+        if uncertainty.ndim == 0:
+            uncertainty = np.full(n_frames, float(uncertainty))
+        if uncertainty.shape != (n_frames,) or not np.isfinite(uncertainty).all():
+            raise ValueError(
+                f"anchor uncertainty for block {region_id} must be scalar or ({n_frames},)"
+            )
+        if (uncertainty < 0.0).any():
+            raise ValueError(f"anchor uncertainty for block {region_id} must be non-negative")
+        out[region_id] = (values, uncertainty, item.label)
+    return out
+
+
+def _broad_source_lids(
+    preliminary_k: np.ndarray,
+    measured_k: np.ndarray,
+    footprint_mask: np.ndarray,
+    board_mask: np.ndarray,
+    labels: np.ndarray,
+    region_ids: frozenset[int],
+    spread_rate_px2_per_s: float,
+    spread_distance_px: float,
+    ring_error_k: np.ndarray,
+    *,
+    anchors: Iterable[InteriorTemperatureAnchor],
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, Any],
+    dict[int, np.ndarray],
+]:
+    """Rebuild heat-spreading lids with a smooth, source-driven plate solve.
+
+    The exterior-ring fit supplies a provisional *mean level* for each lid.  Its
+    assumed central-bump shape is discarded.  A positive source distributed over
+    the whole original footprint is then calibrated to reproduce that mean, and
+    the plate equation is solved over the footprint plus one residual-rim pixel.
+
+    No temperature is pasted, flattened, or blended after the solve.  A broad
+    plateau appears because a smooth distributed source in a conducting plate
+    approaches a level interior while the plate equation makes its rim and all
+    first differences change smoothly.  An optional sensor replaces the provisional
+    mean with a measured central level but uses the same physical solve.
+    """
+    n_frames = len(preliminary_k)
+    anchor_by_id = _anchor_arrays(anchors, n_frames, set(region_ids))
+    out = preliminary_k.copy()
+    depth_all = distance_transform_edt(footprint_mask)
+    fit_range = ring_error_k[:, None, None] * (
+        1.0 + depth_all[None, :, :] / max(float(spread_distance_px), 1e-6)
+    )
+    uncertainty = np.where(footprint_mask[None, :, :], fit_range, 0.0)
+
+    claimed = np.zeros(footprint_mask.shape, dtype=bool)
+    geometry: dict[int, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
+    zero = np.zeros(footprint_mask.shape, dtype=np.float64)
+    for region_id in sorted(region_ids):
+        region = labels == region_id
+        expanded = binary_dilation(region, CROSS) & board_mask
+        expanded &= ~(footprint_mask & ~region) & ~claimed
+        claimed |= expanded
+        unit_source = np.where(region, 1.0 / spread_rate_px2_per_s, 0.0)
+        influence = solve_plate(
+            zero, expanded, fin_length_px=spread_distance_px, source=unit_source
+        )
+        depth = distance_transform_edt(region)
+        central = region & (depth >= max(float(depth.max()) * 0.75, 1.0))
+        if not central.any():
+            central = region
+        geometry[region_id] = (region, expanded, influence, central)
+
+    transition_mask = claimed & ~footprint_mask
+    rebuilt_mask = footprint_mask | transition_mask
+    broad_rates: dict[int, list[float]] = {region_id: [] for region_id in region_ids}
+    slope_mismatches: list[float] = []
+    trusted = board_mask & ~rebuilt_mask
+    edge_samples = {
+        region_id: _edge_profile_samples(expanded, trusted)
+        for region_id, (_, expanded, _, _) in geometry.items()
+    }
+
+    for frame_index in range(n_frames):
+        for region_id, (region, expanded, influence, central) in geometry.items():
+            boundary_solution = solve_plate(
+                measured_k[frame_index], expanded, fin_length_px=spread_distance_px
+            )
+            anchor = anchor_by_id.get(region_id)
+            calibration = region if anchor is None else central
+            target = (
+                float(preliminary_k[frame_index, region].mean())
+                if anchor is None
+                else float(anchor[0][frame_index])
+            )
+            denominator = float(influence[calibration].mean())
+            if denominator <= 1e-12:
+                raise ValueError(f"block {region_id} has no usable broad-source influence")
+            required_rate = (
+                target - float(boundary_solution[calibration].mean())
+            ) / denominator
+            if anchor is not None and required_rate < 0.0:
+                raise ValueError(
+                    f"anchor for block {region_id} is below its source-free boundary "
+                    f"solution at frame {frame_index}; a non-negative heat source cannot "
+                    "satisfy it"
+                )
+            broad_rate = max(0.0, required_rate)
+            broad_rates[region_id].append(broad_rate)
+            solved = boundary_solution[expanded] + broad_rate * influence[expanded]
+            old = preliminary_k[frame_index, expanded]
+            out[frame_index, expanded] = solved
+
+            local_depth = distance_transform_edt(expanded)[expanded]
+            local_fit = ring_error_k[frame_index] * (
+                1.0 + local_depth / max(float(spread_distance_px), 1e-6)
+            )
+            model_difference = np.abs(solved - old)
+            anchor_extra = 0.0 if anchor is None else float(anchor[1][frame_index])
+            uncertainty[frame_index, expanded] = (
+                local_fit + model_difference + anchor_extra
+            )
+
+            for sample in edge_samples[region_id]:
+                (
+                    inside1_r,
+                    inside1_c,
+                    inside2_r,
+                    inside2_c,
+                    outside1_r,
+                    outside1_c,
+                    outside2_r,
+                    outside2_c,
+                ) = sample
+                outside_slope = (
+                    measured_k[frame_index, outside1_r, outside1_c]
+                    - measured_k[frame_index, outside2_r, outside2_c]
+                )
+                inside_slope = (
+                    out[frame_index, inside2_r, inside2_c]
+                    - out[frame_index, inside1_r, inside1_c]
+                )
+                slope_mismatches.extend(np.abs(inside_slope - outside_slope).tolist())
+
+    metadata = {
+        "n_broad_source_lids": len(region_ids),
+        "n_interior_temperature_anchors": len(anchor_by_id),
+        "n_lid_transition_px": int(transition_mask.sum()),
+        "interior_temperature_anchor_labels": [value[2] for value in anchor_by_id.values()],
+        "edge_slope_mismatch_median_k_per_px": (
+            float(np.median(slope_mismatches)) if slope_mismatches else None
+        ),
+        "uncertainty_kind": "model range, not a statistical confidence interval",
+        "uncertainty_median_k": float(np.median(uncertainty[:, rebuilt_mask])),
+        "uncertainty_p95_k": float(np.percentile(uncertainty[:, rebuilt_mask], 95.0)),
+        "lid_broad_source_rate_median_k_per_s": {
+            str(region_id): float(np.median(values))
+            for region_id, values in broad_rates.items()
+            if values
+        },
+        "lid_broad_source_positive_fraction": {
+            str(region_id): float(np.mean(np.asarray(values) > 0.0))
+            for region_id, values in broad_rates.items()
+            if values
+        },
+    }
+    rate_series = {
+        region_id: np.asarray(values, dtype=np.float64)
+        for region_id, values in broad_rates.items()
+    }
+    return out, uncertainty, transition_mask, metadata, rate_series
+
+
 def reconstruct_sequence(
     theta_k: np.ndarray,
     times_s: np.ndarray,
@@ -359,6 +656,8 @@ def reconstruct_sequence(
     pixel_size_mm: float | None = None,
     min_fittable_px: int = MIN_FITTABLE_PX,
     heat_source_ids: Iterable[int] = (),
+    lid_fill: str = "broad-source-plate",
+    interior_temperature_anchors: Iterable[InteriorTemperatureAnchor] = (),
 ) -> Reconstruction:
     """Fill every low-emissivity block, in every frame, from a fitted source rate.
 
@@ -381,6 +680,16 @@ def reconstruct_sequence(
     left uniform costs 0.03 K, while a passive block wrongly concentrated costs
     several kelvin, so the asymmetry runs strongly against false positives.  With
     the default empty set the result is identical to the uniform-only fit.
+
+    ``lid_fill="broad-source-plate"`` keeps the ring-fitted mean level but
+    replaces the assumed central bump with a source distributed over the lid.
+    The final temperature is produced entirely by a plate solve, giving a broad
+    smooth plateau without pasting or flattening pixels.  ``"source-shaped"``
+    remains available as the ablation.
+
+    ``interior_temperature_anchors`` optionally supplies a measured central
+    surface temperature for a lid.  See :class:`InteriorTemperatureAnchor`; an
+    uncorrected die reading is not a surface temperature.
     """
     theta_k = np.asarray(theta_k, dtype=np.float64)
     times_s = np.asarray(times_s, dtype=np.float64)
@@ -396,6 +705,11 @@ def reconstruct_sequence(
         raise ValueError("spread rate and cooling rate must both be positive")
     if not footprint_mask.any():
         raise ValueError("nothing to reconstruct: the footprint mask is empty")
+    if lid_fill not in {"source-shaped", "broad-source-plate"}:
+        raise ValueError(
+            "lid_fill must be 'source-shaped' or 'broad-source-plate', "
+            f"got {lid_fill!r}"
+        )
 
     board = np.ones(footprint_mask.shape, dtype=bool) if board_mask is None else np.asarray(
         board_mask, dtype=bool
@@ -423,6 +737,11 @@ def reconstruct_sequence(
             f"{count}.  Label with tdp.thermal.block_labels so the ids agree."
         )
     concentrated = asked & set(fittable)
+    anchors = tuple(interior_temperature_anchors)
+    if anchors and lid_fill == "source-shaped":
+        raise ValueError("interior temperature anchors require a reconstructed lid model")
+    if anchors and not concentrated:
+        raise ValueError("interior temperature anchors require a fitted heat-producing lid")
     fit_influence = _influence_fields(
         unknown_fit, labels, fittable, spread_rate_px2_per_s, spread_distance_px, concentrated
     )
@@ -455,6 +774,32 @@ def reconstruct_sequence(
         out[index][footprint_mask] = filled[footprint_mask]
 
     depth = distance_transform_edt(footprint_mask)
+    fit_range = ring_error[:, None, None] * (
+        1.0 + depth[None, :, :] / max(spread_distance_px, 1e-6)
+    )
+    uncertainty = np.where(footprint_mask[None, :, :], fit_range, 0.0)
+    lid_transition_mask = np.zeros(footprint_mask.shape, dtype=bool)
+    lid_source_by_id: dict[int, np.ndarray] = {}
+    lid_report: dict[str, Any] = {
+        "n_broad_source_lids": 0,
+        "n_interior_temperature_anchors": 0,
+        "uncertainty_kind": "held-out-ring model range, not a statistical confidence interval",
+        "uncertainty_median_k": float(np.median(uncertainty[:, footprint_mask])),
+        "uncertainty_p95_k": float(np.percentile(uncertainty[:, footprint_mask], 95.0)),
+    }
+    if lid_fill == "broad-source-plate" and concentrated:
+        out, uncertainty, lid_transition_mask, lid_report, lid_source_by_id = _broad_source_lids(
+            out,
+            theta_k,
+            footprint_mask,
+            board,
+            labels,
+            frozenset(concentrated),
+            spread_rate_px2_per_s,
+            spread_distance_px,
+            ring_error,
+            anchors=anchors,
+        )
     rows, cols = np.mgrid[0 : footprint_mask.shape[0], 0 : footprint_mask.shape[1]]
     height, width = footprint_mask.shape
     blocks: list[BlockSource] = []
@@ -473,6 +818,10 @@ def reconstruct_sequence(
         else:
             series = np.zeros(n_frames)
             rate, scatter, was_fitted = 0.0, 0.0, False
+        reconstruction_series = lid_source_by_id.get(region_id, series)
+        reconstruction_low, reconstruction_high = np.percentile(
+            reconstruction_series, [16.0, 84.0]
+        )
         blocks.append(
             BlockSource(
                 region_id=region_id,
@@ -490,6 +839,16 @@ def reconstruct_sequence(
                 fitted=was_fitted,
                 touches_border=touches,
                 source_shape="centre-weighted" if region_id in concentrated else "uniform",
+                interior_fill=(
+                    "broad-source plate"
+                    if lid_fill == "broad-source-plate" and region_id in concentrated
+                    else "source-shaped"
+                ),
+                reconstruction_source_rate_k_per_s=float(np.median(reconstruction_series)),
+                reconstruction_source_rate_by_frame=reconstruction_series,
+                reconstruction_source_rate_spread_k_per_s=float(
+                    reconstruction_high - reconstruction_low
+                ),
             )
         )
 
@@ -505,6 +864,8 @@ def reconstruct_sequence(
         "ring_error_no_source_median_k": float(np.median(ring_error_no_source)),
         "n_centre_weighted": len(concentrated),
         "concentration_exponent": CONCENTRATION_EXPONENT if concentrated else None,
+        "lid_fill": lid_fill,
+        **lid_report,
     }
     return Reconstruction(
         theta_k=out,
@@ -516,6 +877,8 @@ def reconstruct_sequence(
         spread_distance_px=spread_distance_px,
         ring_error_k=ring_error,
         ring_error_no_source_k=ring_error_no_source,
+        uncertainty_k=uncertainty,
+        lid_transition_mask=lid_transition_mask,
         report=report,
     )
 
@@ -523,7 +886,7 @@ def reconstruct_sequence(
 def heating_rate_from_reconstruction(
     result: Reconstruction, region_id: int, *, half_window: int = 2
 ) -> np.ndarray:
-    """Split a block's fitted source rate back into a heating rate, K/s per frame.
+    """Split the final plate solve's source rate into a heating rate, K/s per frame.
 
     The fit returns ``heating rate - warming rate``; the reconstruction supplies
     the warming rate, so the heating rate follows.  It is reported per frame and
@@ -537,7 +900,12 @@ def heating_rate_from_reconstruction(
     region = labels == region_id
     interior = result.theta_k[:, region].mean(axis=1)[:, None, None]
     warming = warming_rate(interior, result.times_s, half_window=half_window)
-    return block.source_rate_by_frame + warming[:, 0, 0]
+    source_rate = (
+        block.source_rate_by_frame
+        if block.reconstruction_source_rate_by_frame is None
+        else block.reconstruction_source_rate_by_frame
+    )
+    return source_rate + warming[:, 0, 0]
 
 
 @dataclass(frozen=True)

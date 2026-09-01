@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from scipy.ndimage import binary_dilation, distance_transform_edt
 
-from tdp.data.emissivity import solve_plate
+from tdp.data.emissivity import CROSS, solve_plate
 from tdp.thermal import reconstruct as rc
 
 GRID = (70, 50)
@@ -300,6 +301,7 @@ def test_centre_weighted_source_beats_a_uniform_one_under_a_die(die_board):
         cooling_rate_per_s=COOLING_RATE_PER_S,
         spread_rate_px2_per_s=SPREAD_RATE_PX2_PER_S,
         ring_px=6, pixel_size_mm=0.5425, heat_source_ids=[hot],
+        lid_fill="source-shaped",
     )
     truth = theta
     flat_error = np.abs(flat.theta_k[:, HOT_BLOCK] - truth[:, HOT_BLOCK]).mean()
@@ -326,11 +328,131 @@ def test_centre_weighting_is_recorded_on_the_block_it_was_applied_to(die_board):
         cooling_rate_per_s=COOLING_RATE_PER_S,
         spread_rate_px2_per_s=SPREAD_RATE_PX2_PER_S,
         ring_px=6, pixel_size_mm=0.5425, heat_source_ids=[hot],
+        lid_fill="source-shaped",
     )
     shapes = {b.region_id: b.source_shape for b in result.blocks}
     assert shapes[hot] == "centre-weighted"
     assert set(shapes.values()) - {"centre-weighted"} == {"uniform"}
     assert result.report["n_centre_weighted"] == 1
+
+
+def test_broad_source_lid_keeps_the_fitted_level_and_is_not_flat(die_board):
+    """The ring estimates the level; one plate solve supplies the smooth shape."""
+    theta, times, mask, source = die_board
+    hot = _hot_id(mask)
+    bump = rc.reconstruct_sequence(
+        theta, times, mask, source,
+        cooling_rate_per_s=COOLING_RATE_PER_S,
+        spread_rate_px2_per_s=SPREAD_RATE_PX2_PER_S,
+        ring_px=6, heat_source_ids=[hot], lid_fill="source-shaped",
+    )
+    broad = rc.reconstruct_sequence(
+        theta, times, mask, source,
+        cooling_rate_per_s=COOLING_RATE_PER_S,
+        spread_rate_px2_per_s=SPREAD_RATE_PX2_PER_S,
+        ring_px=6, heat_source_ids=[hot], lid_fill="broad-source-plate",
+    )
+    labels, _ = rc.block_labels(mask)
+    region = labels == hot
+    assert np.allclose(
+        broad.theta_k[:, region].mean(axis=1),
+        bump.theta_k[:, region].mean(axis=1),
+        atol=1e-9,
+    )
+    depth = distance_transform_edt(region)
+    core = region & (depth >= 0.75 * depth.max())
+    # A pasted plateau made every core pixel exactly identical.  A plate solution
+    # is broad, but retains the small curvature required to carry heat outward.
+    assert np.median(broad.theta_k[:, core].std(axis=1)) > 0.01
+    assert next(b for b in broad.blocks if b.region_id == hot).interior_fill == (
+        "broad-source plate"
+    )
+    assert broad.report["lid_broad_source_rate_median_k_per_s"][str(hot)] > 0.0
+    assert broad.report["lid_broad_source_positive_fraction"][str(hot)] == 1.0
+    block = next(b for b in broad.blocks if b.region_id == hot)
+    assert block.reconstruction_source_rate_k_per_s == pytest.approx(
+        broad.report["lid_broad_source_rate_median_k_per_s"][str(hot)]
+    )
+
+
+def test_broad_source_lid_rebuilds_the_edge_inside_one_plate_domain(die_board):
+    theta, times, mask, source = die_board
+    hot = _hot_id(mask)
+    result = rc.reconstruct_sequence(
+        theta, times, mask, source,
+        cooling_rate_per_s=COOLING_RATE_PER_S,
+        spread_rate_px2_per_s=SPREAD_RATE_PX2_PER_S,
+        ring_px=6, heat_source_ids=[hot], lid_fill="broad-source-plate",
+    )
+    # The extra rim means the old footprint border is no longer a Dirichlet seam:
+    # pixels on both sides of it are unknowns in the same plate solve.
+    labels, _ = rc.block_labels(mask)
+    region = labels == hot
+    transition = result.lid_transition_mask
+    assert transition.any()
+    assert np.any(transition & binary_dilation(region, CROSS))
+    assert result.report["edge_slope_mismatch_median_k_per_px"] < 1.0
+
+    # The final pixels themselves satisfy the plate equation: a spatially
+    # constant positive source on the lid and zero source on its transition rim.
+    field = result.theta_k[N_FRAMES // 2]
+    operator = -_laplacian(field) + field / result.spread_distance_px**2
+    assert np.std(operator[region]) < 1e-9
+    assert np.mean(operator[region]) > 0.0
+    assert np.max(np.abs(operator[transition])) < 1e-9
+    block = next(b for b in result.blocks if b.region_id == hot)
+    assert block.reconstruction_source_rate_by_frame[N_FRAMES // 2] == pytest.approx(
+        float(operator[region].mean()) * SPREAD_RATE_PX2_PER_S
+    )
+
+
+def test_lid_uncertainty_is_explicit_and_only_applies_to_rebuilt_pixels(die_board):
+    theta, times, mask, source = die_board
+    hot = _hot_id(mask)
+    result = rc.reconstruct_sequence(
+        theta, times, mask, source,
+        cooling_rate_per_s=COOLING_RATE_PER_S,
+        spread_rate_px2_per_s=SPREAD_RATE_PX2_PER_S,
+        ring_px=6, heat_source_ids=[hot], lid_fill="broad-source-plate",
+    )
+    assert result.uncertainty_k is not None
+    assert result.uncertainty_k.shape == theta.shape
+    rebuilt = result.rebuilt_mask
+    assert result.lid_transition_mask.any()
+    assert np.array_equal(result.theta_k[:, ~rebuilt], theta[:, ~rebuilt])
+    assert np.array_equal(
+        result.uncertainty_k[:, ~rebuilt], np.zeros((N_FRAMES, (~rebuilt).sum()))
+    )
+    assert np.median(result.uncertainty_k[:, mask]) > 0.0
+    assert "not a statistical confidence interval" in result.report["uncertainty_kind"]
+
+
+def test_interior_temperature_anchor_sets_the_central_level_and_uncertainty(die_board):
+    theta, times, mask, source = die_board
+    hot = _hot_id(mask)
+    target = np.linspace(31.0, 33.0, N_FRAMES)
+    anchor = rc.InteriorTemperatureAnchor(
+        region_id=hot,
+        temperature_above_ambient_k_by_frame=target,
+        uncertainty_k=0.4,
+        label="corrected SoC sensor",
+    )
+    result = rc.reconstruct_sequence(
+        theta, times, mask, source,
+        cooling_rate_per_s=COOLING_RATE_PER_S,
+        spread_rate_px2_per_s=SPREAD_RATE_PX2_PER_S,
+        ring_px=6, heat_source_ids=[hot], lid_fill="broad-source-plate",
+        interior_temperature_anchors=[anchor],
+    )
+    labels, _ = rc.block_labels(mask)
+    region = labels == hot
+    depth = distance_transform_edt(region)
+    core = region & (depth >= 0.75 * depth.max())
+    assert np.allclose(result.theta_k[:, core].mean(axis=1), target, atol=1e-9)
+    # The supplied sensor uncertainty is added to, not substituted for, the IR
+    # model range because die-to-lid correction and spatial shape remain uncertain.
+    assert np.all(result.uncertainty_k[:, core] >= 0.4)
+    assert result.report["interior_temperature_anchor_labels"] == ["corrected SoC sensor"]
 
 
 def test_no_heat_source_ids_reproduces_the_uniform_fit_exactly(board):
@@ -389,3 +511,13 @@ def test_the_figure_never_gives_contour_an_imshow_extent():
     text = pathlib.Path("scripts/figure_reconstruct.py").read_text()
     for call in re.findall(r"contour\((?:[^()]|\([^()]*\))*\)", text, flags=re.S):
         assert "extent" not in call, f"contour with an extent is mirrored: {call[:70]}"
+
+
+def test_the_figure_does_not_hide_reconstructed_pixels_with_the_analysis_mask():
+    """Deep extrapolations are low-confidence, not outside the PCB."""
+    import pathlib
+
+    text = pathlib.Path("scripts/figure_reconstruct.py").read_text()
+    assert "np.where(board, field" not in text
+    assert "np.where(board, diff" not in text
+    assert "np.where(board, fieldset" not in text

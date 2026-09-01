@@ -535,9 +535,9 @@ def _repair_sequence(
         "trust_decay_px": float(spec.repair.trust_decay_px),
         "regions": regions,
         "caveat": (
-            "conduction fill from boundary data alone cannot place a maximum inside a "
-            "powered package; the SoC footprint is a lower bound unless an on-die anchor "
-            "is supplied"
+            "this legacy dynamic-inverse input uses a boundary-only conduction fill and "
+            "cannot place a maximum inside a powered package; production Stage 2 uses "
+            "tdp.thermal.reconstruct with fitted sources and explicit uncertainty"
         ),
     }
     return repaired, mask, emissivity, trust, report

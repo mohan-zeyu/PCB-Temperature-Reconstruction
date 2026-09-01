@@ -22,22 +22,18 @@ the surrounding trusted pixels as Dirichlet data, and the crop border as
 adiabatic.  The plate stiffness cancels between the two sides, so no material
 constants have to be known to fill a passive region.
 
-Two facts set the scope of what that fill means, both measured rather than
-assumed (see ``docs/emissivity_repair.md``):
+Two facts set the scope of what that fill means:
 
 * For *passive* metal -- shields, cages, hardware -- there is no source under
   the footprint, and the conduction fill is an estimate of the surface
   temperature.
 * For a *powered* package such as the SoC lid, boundary data alone is not
-  enough.  No solution of the homogeneous equation has an interior maximum, so
-  a fill driven only by the ring around a package can never reconstruct the
-  source under it: measured against ``vcgencmd`` on this board it lands 4.0 C
-  low.  The fix is not a better interpolator, it is more data.  An on-die
-  sensor reading is a *known interior value* in the very same boundary-value
-  problem, and :func:`repair_frame` accepts it through ``anchors``: anchor
-  pixels move from the unknown set into the Dirichlet set, and conduction then
-  carries the source outward to meet the trusted board.  Without an anchor the
-  repaired package footprint is a lower bound and is labelled as such.
+  enough.  No solution of the homogeneous equation has an interior maximum.
+  This single-frame repair therefore remains conservative preprocessing for the
+  older dynamic-inverse path.  The production sequence reconstruction lives in
+  :mod:`tdp.thermal.reconstruct`: it fits source rates from held-out exterior
+  board, uses a broad positive source for the SoC lid, reports uncertainty, and
+  optionally accepts a corrected central-temperature measurement.
 
 Emissivity is not used to produce the field.  The default path is conduction
 end to end; a per-region effective emissivity is *fitted and reported* as a
@@ -109,8 +105,10 @@ def solve_plate(
     right in-plane condition and it keeps regions that touch the border (the
     connector bank) solvable.
 
-    ``source`` is in the same units as the operator, i.e. power divided by the
-    plate stiffness k_eff d, which is what :func:`outward_flux` returns.
+    ``source`` is in the same normalized operator units as curvature times
+    temperature.  The unknown plate stiffness has been divided out, so this is
+    not power and cannot be reported in watts.  :func:`outward_flux` returns the
+    matching normalized quantity.
     """
     if theta.ndim != 2:
         raise ValueError(f"solve_plate expects a 2-D field, got shape {theta.shape}")
@@ -167,7 +165,7 @@ def solve_plate(
 
 
 def outward_flux(theta: np.ndarray, region: np.ndarray) -> float:
-    """Net heat flow leaving ``region``, in units of the plate stiffness k_eff d.
+    """Normalized lateral heat flow leaving ``region``.
 
     Discrete divergence theorem: every 4-neighbour edge that crosses the region
     boundary carries ``theta_inside - theta_outside``; interior edges cancel.
@@ -194,14 +192,13 @@ def infer_region_source(
     gaps_px: tuple[int, ...] = (4, 6, 8, 10),
     mask: np.ndarray | None = None,
 ) -> float | None:
-    """Power dissipated under a footprint, from the heat leaving it sideways.
+    """Normalized source under a footprint, from heat leaving it sideways.
 
     The divergence theorem turns a contour integral of the measured field into
-    the power enclosed: everything generated inside a contour either crosses it
-    or is lost to air on the way.  Both terms are in units of the plate
-    stiffness k_eff d, which is also the unit :func:`solve_plate` wants for its
-    source, so the number can be fed straight back in and no material constant
-    is needed.
+    the normalized source enclosed: everything generated inside a contour either
+    crosses it or is lost to air on the way.  The unknown plate stiffness has
+    been divided out, so the result can be fed back into :func:`solve_plate` but
+    is not an absolute heat flow or power.
 
     ``theta`` must be a *repaired* field.  On raw data this integral is
     worthless: the radiometric step at a shield edge is a huge dipole in the
@@ -209,14 +206,14 @@ def infer_region_source(
     the contour is drawn.  After the artifacts are filled the same contours give
     56, 56, 53, 55, 51 -- which is why this is a second pass and not a first.
 
-    The contour integral measures the power enclosed by the *contour*, not by
+    The contour integral measures the source enclosed by the *contour*, not by
     the footprint, so it is only attributable to the footprint when the annulus
     between them is clean board.  ``mask`` (when given) is used to refuse the
     estimate otherwise: a sprawling connector bank whose contour sweeps in its
-    neighbours reports 1.75 W of "dissipation" that belongs to the board.
+    neighbours reports a large false source that belongs to the board.
 
     Returns ``None`` when the contours disagree, when the annulus is crowded,
-    or when the enclosed power is not positive -- i.e. when the footprint shows
+    or when the enclosed source is not positive -- i.e. when the footprint shows
     no trustworthy evidence of a source.
     """
     values: list[float] = []
@@ -496,11 +493,12 @@ def fit_region_emissivity(
 class Anchor:
     """A known temperature inside a footprint, from a sensor the camera cannot see.
 
-    An on-die sensor (``vcgencmd measure_temp``) measures the one place the IR
-    field has no information about: under a package lid.  Supplying it turns the
-    fill from an extrapolation into an interpolation between two knowns -- the
-    trusted board outside and the sensor inside -- which is the only way a
-    conduction solve can put a maximum inside a footprint.
+    An on-die sensor (``vcgencmd measure_temp``) constrains a place the IR field
+    cannot see under a package lid.  In this legacy single-frame API, supplying
+    it turns the fill from an exterior extrapolation into an interpolation.  The
+    production sequence API can instead infer a broad positive source from the
+    exterior response; its optional sensor interface is
+    :class:`tdp.thermal.reconstruct.InteriorTemperatureAnchor`.
 
     ``radius_px`` spreads the value over a small disc rather than a single
     pixel.  A metal lid is a good conductor and close to isothermal, so a disc
@@ -519,8 +517,9 @@ class Anchor:
     location.  Nothing is pasted in: the profile inside the footprint is
     generated by the plate equation, so it peaks over the die, falls off
     towards the edges, and joins the surrounding board smoothly.  This is the
-    physically faithful way to use an on-die reading, and it also returns the
-    package power that the reading implies.
+    physically faithful option in this legacy single-frame API.  The returned
+    source strength is normalized by the unknown plate stiffness; it is not
+    package power.
 
     ``temperature_c`` is imposed as given.  A die sensor reads the junction,
     which is hotter than the lid and hotter than the board plane under it, so
@@ -579,7 +578,7 @@ class RegionReport:
     max_distance_to_trusted_px: float  # deepest extrapolation inside this region
     anchor_labels: list[str]  # anchors pinned inside this region, if any
     anchor_lift_c: float | None  # region mean gained by anchoring, vs boundary data alone
-    inferred_source: float | None  # power under the footprint, k_eff d units
+    inferred_source: float | None  # normalized source under the footprint
     source_lift_c: float | None  # region mean gained by the source term
 
 
@@ -625,13 +624,11 @@ def repair_frame(
     only on trusted neighbours and on geometry, never on the corrupted reading
     itself.
 
-    ``infer_sources`` runs a second pass that treats each footprint as what it
-    physically is -- a component that may be *generating* heat -- instead of a
-    passive hole.  The power under a footprint is measured from the heat
-    crossing a contour around it (:func:`infer_region_source`) and fed back as
-    the source term, which is the only way a solve can raise the interior above
-    its own boundary without an external sensor.  On the CPU footprint this
-    recovers 1.97 W and +2.5 C, landing 1.5 C under the on-die reading.
+    ``infer_sources`` is the older single-frame source diagnostic.  It estimates
+    a normalized source from heat crossing a contour around each footprint and
+    feeds that term back into the solve.  It must not be interpreted as watts.
+    Production Stage 2 instead fits each frame from a held-out exterior ring in
+    :func:`tdp.thermal.reconstruct.reconstruct_sequence`.
 
     ``anchors`` adds known interior temperatures -- an on-die sensor reading,
     typically -- as extra Dirichlet data.  Anchor pixels leave the unknown set,
@@ -726,10 +723,10 @@ def repair_frame(
     conduction = solve_plate(theta, unknown, fin_length_px=fin_length_px) + ambient
 
     # Calibrated sources: the sensor reading is a target, not a value to paste.
-    # The solve is affine in the source, so one extra solve with unit power
+    # The solve is affine in the source, so one extra solve with unit strength
     # gives the response and the required strength follows in closed form --
     # no search, and the profile inside the footprint is whatever the plate
-    # equation produces for that power.
+    # equation produces for that strength.
     sources: dict[int, float] = {}
     source_lift: dict[int, float] = {}
     # One accumulated source field: a calibrated anchor and an inferred source
@@ -757,14 +754,14 @@ def repair_frame(
             if response[row, col] <= 1e-12:
                 raise ValueError(f"anchor {name!r} sits where a source has no leverage")
             deficit = float(item.temperature_c) - float(conduction[row, col])
-            power = deficit / float(response[row, col])
-            if power <= 0.0:
+            source_strength = deficit / float(response[row, col])
+            if source_strength <= 0.0:
                 # The reading is at or below what conduction already gives: the
                 # package is not driving its surroundings, so invent no source.
                 anchor_region.setdefault(region_id, []).append(name)
                 continue
-            source_map[region] += power / int(region.sum())
-            sources[region_id] = sources.get(region_id, 0.0) + power
+            source_map[region] += source_strength / int(region.sum())
+            sources[region_id] = sources.get(region_id, 0.0) + source_strength
             anchor_region.setdefault(region_id, []).append(name)
         if sources:
             with_source = (
@@ -780,8 +777,8 @@ def repair_frame(
                 unanchored = conduction
             conduction = with_source
 
-    # Second pass: let each footprint carry the power its surroundings say is
-    # under it.  A homogeneous fill has no interior maximum by construction, so
+    # Second pass: let each footprint carry the source its surroundings support.
+    # A homogeneous fill has no interior maximum by construction, so
     # a powered package can only be reconstructed if the source term is put
     # back -- and the surrounding flux can only be measured once the first pass
     # has removed the radiometric steps that otherwise dominate it.
@@ -800,24 +797,24 @@ def repair_frame(
                 or cols_r.max() == width - 1
             ):
                 continue  # the adiabatic frame edge makes the balance unreliable
-            power = infer_region_source(
+            source_strength = infer_region_source(
                 clean, region, fin_length_px=fin_length_px, mask=mask
             )
-            if power is None:
+            if source_strength is None:
                 continue
-            inferred[region_id] = power
-            source_map[region] += power / int(region.sum())
+            inferred[region_id] = source_strength
+            source_map[region] += source_strength / int(region.sum())
         if inferred:
             with_source = (
                 solve_plate(theta, unknown, fin_length_px=fin_length_px, source=source_map)
                 + ambient
             )
-            for region_id, power in inferred.items():
+            for region_id, source_strength in inferred.items():
                 region = labels == region_id
                 source_lift[region_id] = float(
                     with_source[region].mean() - conduction[region].mean()
                 )
-                sources[region_id] = power
+                sources[region_id] = source_strength
             conduction = with_source
 
     repaired = conduction.copy()

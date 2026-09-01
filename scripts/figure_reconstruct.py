@@ -44,10 +44,15 @@ def case17_check():
     verdicts = th.judge_footprints(theta[min(120, n - 1)], hidden, pixel_size_mm=PX)
     sources = [v.region_id for v in verdicts if v.verdict == "heat source"]
     labels17, _ = th.block_labels(hidden)
+    centred = th.reconstruct_sequence(
+        theta[:n], times[:n], hidden, heating, cooling_rate_per_s=cooling,
+        spread_rate_px2_per_s=SPREAD, board_mask=board, pixel_size_mm=PX,
+        heat_source_ids=sources, lid_fill="source-shaped")
+    centred_check = th.validate_against_truth(centred, theta[:n], region_labels=labels17)
     result = th.reconstruct_sequence(
         theta[:n], times[:n], hidden, heating, cooling_rate_per_s=cooling,
         spread_rate_px2_per_s=SPREAD, board_mask=board, pixel_size_mm=PX,
-        heat_source_ids=sources)
+        heat_source_ids=sources, lid_fill="broad-source-plate")
     check = th.validate_against_truth(result, theta[:n], region_labels=labels17)
     # The ablation: the same fit with every source spread uniformly, which is what
     # this figure reported before 2026-08-29.
@@ -62,7 +67,8 @@ def case17_check():
             continue
         per_block[blk.region_id] = dict(
             area_mm2=blk.area_mm2, shape=blk.source_shape,
-            centred=float(np.abs(result.theta_k[:, region] - theta[:n][:, region]).mean()),
+            broad=float(np.abs(result.theta_k[:, region] - theta[:n][:, region]).mean()),
+            centred=float(np.abs(centred.theta_k[:, region] - theta[:n][:, region]).mean()),
             uniform=float(np.abs(flat.theta_k[:, region] - theta[:n][:, region]).mean()),
         )
     edge = np.stack([solve_plate(theta[i], hidden, result.spread_distance_px)
@@ -101,7 +107,9 @@ def case17_check():
     rr, cc = np.nonzero(patch)
     return dict(
         oracle=oracle_check, per_block=per_block, flat_check=flat_check,
-        truth=theta[:n], built=result.theta_k, mask=hidden, board=board, check=check,
+        centred_check=centred_check,
+        truth=theta[:n], built=result.theta_k, mask=hidden,
+        transition=result.lid_transition_mask, check=check,
         edge_bias=float((edge[:, hidden] - truth).mean()),
         edge_error=float(np.abs(edge[:, hidden] - truth).mean()),
         frame=min(120, n - 1), soc=soc, soc_id=soc_id,
@@ -114,12 +122,14 @@ def case17_check():
 def main() -> int:
     run = np.load(OUT / "reconstructed_sequence.npz")
     built, measured = run["theta_k"], run["measured_theta_k"]
-    mask, board, times = run["unknown_mask"], run["board_mask"], run["times_s"]
+    mask, times = run["unknown_mask"], run["times_s"]
+    transition = run["lid_transition_mask"] if "lid_transition_mask" in run else np.zeros_like(mask)
+    rebuilt_mask = run["rebuilt_mask"] if "rebuilt_mask" in run else mask | transition
     ring, ring0 = run["ring_error_k"], run["ring_error_no_source_k"]
     rates, ids = run["source_rate_by_frame"], run["region_ids"]
     labels, _ = label(mask, structure=np.ones((3, 3)))
-    edge = mask ^ binary_dilation(mask, CROSS)
-    depth = distance_transform_edt(mask) * PX
+    edge = rebuilt_mask ^ binary_dilation(rebuilt_mask, CROSS)
+    depth = distance_transform_edt(rebuilt_mask) * PX
     show = 200
     c17 = case17_check()
 
@@ -135,10 +145,12 @@ def main() -> int:
         return ax.contour(grid_x, grid_y, np.asarray(field, dtype=np.float64), **kwargs)
 
     fig, axes = plt.subplots(2, 4, figsize=(21, 13))
-    lo, hi = 0.0, float(built[show][board].max())
+    lo, hi = 0.0, float(np.nanmax(built[show]))
 
     def board_map(ax, field, title, cmap="inferno", vmin=lo, vmax=hi, mm=True):
-        canvas = np.where(board, field, np.nan)
+        # The analysis-valid mask rejects deep extrapolations, but those pixels
+        # still belong to the rectified PCB and were rebuilt, so display them.
+        canvas = np.ma.masked_invalid(field)
         image = ax.imshow(canvas, cmap=cmap, vmin=vmin, vmax=vmax, extent=extent)
         ax.set_title(title, fontsize=11)
         ax.set_xlabel("mm" if mm else "")
@@ -156,9 +168,9 @@ def main() -> int:
     outline(a, np.where(edge, 1.0, 0.0), levels=[0.5], colors="cyan", linewidths=0.8)
 
     a = axes[0, 2]
-    diff = np.where(mask, built[show] - measured[show], np.nan)
+    diff = np.where(rebuilt_mask, built[show] - measured[show], np.nan)
     top = float(np.nanmax(np.abs(diff)))
-    image = a.imshow(np.where(board, diff, np.nan), cmap="RdBu_r", vmin=-top, vmax=top, extent=extent)
+    image = a.imshow(diff, cmap="RdBu_r", vmin=-top, vmax=top, extent=extent)
     outline(a, depth, levels=[5, 10, 15], colors="k", linewidths=0.7)
     a.set_title("3. How much was added, kelvin\n"
                 "contours: 5, 10, 15 mm from the nearest trustworthy pixel", fontsize=11)
@@ -176,8 +188,8 @@ def main() -> int:
     a.set_yticks(range(len(med)))
     a.set_yticklabels(["block %d  (%.0f mm2)" % (i, s) for i, s in zip(ids[order], area)], fontsize=8)
     a.axvline(0, color="k", lw=0.8)
-    a.set_xlabel("fitted source rate, kelvin per second")
-    a.set_title("4. What each block puts into the board\n"
+    a.set_xlabel("final reconstruction source rate, kelvin per second")
+    a.set_title("4. Source used by the final plate reconstruction\n"
                 "bars: middle 68% of the 240 frames.  No watts: every rate here\n"
                 "was divided by an unknown, varying heat capacity", fontsize=11)
 
@@ -194,14 +206,15 @@ def main() -> int:
     a.set_ylim(bottom=0)
 
     frame17 = c17["frame"]
-    m17, b17 = c17["mask"], c17["board"]
-    hi17 = float(c17["truth"][frame17][b17].max())
+    m17 = c17["mask"]
+    rebuilt17 = m17 | c17["transition"]
+    hi17 = float(np.nanmax(c17["truth"][frame17]))
     a = axes[1, 1]
     board_map(a, c17["truth"][frame17], "6. case17, painted: MEASURED\n"
               "its own hottest patch (+) falls %d of %d px inside\n"
               "case10's SoC outline: the two runs are aligned"
               % (c17["patch_in_soc"], c17["patch_px"]), vmax=hi17)
-    outline(a, np.where(m17 ^ binary_dilation(m17, CROSS), 1.0, 0.0), levels=[0.5],
+    outline(a, np.where(rebuilt17 ^ binary_dilation(rebuilt17, CROSS), 1.0, 0.0), levels=[0.5],
             colors="cyan", linewidths=0.8)
     soc = c17["soc"]
     outline(a, np.where(soc, 1.0, 0.0), levels=[0.5], colors="lime", linewidths=2.0)
@@ -214,9 +227,9 @@ def main() -> int:
 
     a = axes[1, 2]
     board_map(a, c17["built"][frame17], "7. case17, case10's mask imposed: RECONSTRUCTED\n"
-              "the same 39.5% hidden and rebuilt.  The SoC's source is\n"
-              "centre-weighted, every other block's uniform", vmax=hi17)
-    outline(a, np.where(m17 ^ binary_dilation(m17, CROSS), 1.0, 0.0), levels=[0.5],
+              "the same 39.5% hidden plus one explicit rim pixel. The SoC has\n"
+              "a broad plateau generated by one smooth plate-equation solve", vmax=hi17)
+    outline(a, np.where(rebuilt17 ^ binary_dilation(rebuilt17, CROSS), 1.0, 0.0), levels=[0.5],
             colors="cyan", linewidths=0.8)
 
     a = axes[1, 3]
@@ -224,42 +237,39 @@ def main() -> int:
     check = c17["check"]
     a.text(0.0, 1.0, "8. Scored against case17's truth\n", fontsize=13, weight="bold",
            va="top", transform=a.transAxes)
-    oracle, flat = c17["oracle"], c17["flat_check"]
+    oracle, flat, centred = c17["oracle"], c17["flat_check"], c17["centred_check"]
     blocks = c17["per_block"]
     soc = max(blocks, key=lambda i: blocks[i]["area_mm2"] if blocks[i]["shape"] != "uniform" else -1)
-    worst = max(abs(blocks[i]["centred"] - blocks[i]["uniform"]) for i in blocks if i != soc)
+    worst = max(abs(blocks[i]["broad"] - blocks[i]["centred"]) for i in blocks if i != soc)
     a.text(0.0, 0.94, (
         "Filling the blocks from their edges only, the old way:\n"
         "    mean %.2f K, bias %+.2f K  <- cold in every frame\n\n"
         "Putting the measured heat source underneath:\n"
         "    spread uniformly over the block   %.2f K  (bias %+.2f)\n"
-        "    centre-weighted where the edge\n"
-        "    test says the block makes heat    %.2f K  (bias %+.2f)\n\n"
-        "That change touches one block on this board, the SoC:\n"
+        "    provisional centre-weighted       %.2f K  (bias %+.2f)\n"
+        "    broad-source plate solve          %.2f K  (bias %+.2f)\n\n"
+        "The final shape change touches one block, the SoC:\n"
         "    SoC block, uniform source         %.2f K\n"
         "    SoC block, centre-weighted        %.2f K\n"
+        "    SoC block, broad-source plate     %.2f K\n"
         "    worst change on any other block   %+.2f K\n"
-        "A small die under a heat-spreading lid is not a uniform\n"
-        "source over 269 mm2.  A flat source builds a plateau, so\n"
-        "the middle came out cold while the edges were about right.\n\n"
+        "The exterior ring estimates the block's mean level. The\n"
+        "unobserved bell shape made the centre hot and the broad\n"
+        "area around it cold. The new fill preserves that mean,\n"
+        "is generated by a broad source and the plate equation.\n\n"
         "Where the remaining %.2f K sits:\n"
         "    block at the wrong level   %.2f K\n"
         "    wrong pattern inside it    %.2f K\n"
         "Fitting each source to case17's HIDDEN truth instead of to\n"
         "the ring -- the best one number per block can do -- leaves\n"
         "level %.2f K and pattern %.2f K.\n\n"
-        "Reading the pattern under the lid was tried and it loses.\n"
-        "Four ways, all scored here: adding the pattern that grew\n"
-        "over the run, 2.63 -> 2.44 K at best; using only the\n"
-        "reflection-free time differences, 2.60 K, because 97%% of\n"
-        "the error is static; rebuilding a block straight from its\n"
-        "lid reading, 6.59 K; taking only its level, 4.83 K.  The\n"
-        "lid's gain is recoverable to 20%% at best, and its static\n"
-        "reflection offset cannot be told apart from the fill's own\n"
-        "level error -- one equation, two unknowns."
+        "The saved per-pixel uncertainty is a model range, not a\n"
+        "confidence interval. It combines held-out-ring error with\n"
+        "the disagreement between central- and broad-source plate solutions."
     ) % (c17["edge_error"], c17["edge_bias"],
-         flat.mean_absolute_k, flat.bias_k, check.mean_absolute_k, check.bias_k,
-         blocks[soc]["uniform"], blocks[soc]["centred"], worst,
+         flat.mean_absolute_k, flat.bias_k, centred.mean_absolute_k, centred.bias_k,
+         check.mean_absolute_k, check.bias_k,
+         blocks[soc]["uniform"], blocks[soc]["centred"], blocks[soc]["broad"], worst,
          check.mean_absolute_k, check.level_error_k, check.shape_error_k,
          oracle.level_error_k, oracle.shape_error_k),
         fontsize=8.8, va="top", family="monospace", transform=a.transAxes)
@@ -277,7 +287,7 @@ def main() -> int:
     for column, index in enumerate(picks):
         for row, (fieldset, name) in enumerate(((measured, "camera"), (built, "reconstructed"))):
             ax = axes2[row, column]
-            ax.imshow(np.where(board, fieldset[index], np.nan), cmap="inferno",
+            ax.imshow(np.ma.masked_invalid(fieldset[index]), cmap="inferno",
                       vmin=0, vmax=hi, extent=extent)
             ax.set_xticks([]); ax.set_yticks([])
             if row == 0:

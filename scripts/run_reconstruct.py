@@ -22,7 +22,8 @@ PIXEL_SIZE_MM = 0.5425  # 85x56 mm outline on the 157x103 grid; not an instrumen
 # Chosen on measured evidence, not fitted: Stage 1's direct widening measurement puts
 # the spread distance at 5-9 mm, refilling held-out holes in known case10 board bottoms
 # out above 5.5 mm, and case17's reconstruction error moves by 6 % over a fivefold
-# range of spread rate.  2.0 px^2/s = 8.9 mm sits where all three agree.
+# range of spread rate.  With the final cooling fit, 2.0 px^2/s = 9.27 mm and
+# sits at the upper end where all three checks agree.
 DEFAULT_SPREAD_RATE = 2.0
 
 
@@ -38,6 +39,12 @@ def main() -> int:
         action="store_true",
         help="spread every block's source uniformly, the pre-2026-08-29 behaviour;"
         " the ablation for the centre-weighted source",
+    )
+    parser.add_argument(
+        "--source-shaped-lids",
+        action="store_true",
+        help="keep the fitted centre-weighted bump inside a heat-producing lid;"
+        " the default solves a smooth plate driven by a broad distributed source",
     )
     args = parser.parse_args()
 
@@ -93,6 +100,7 @@ def main() -> int:
         board_mask=board,
         pixel_size_mm=PIXEL_SIZE_MM,
         heat_source_ids=() if args.uniform_sources else heat_source_ids,
+        lid_fill="source-shaped" if args.source_shaped_lids else "broad-source-plate",
     )
     report = result.report
     print(f"  spread distance {report['spread_distance_mm']:.2f} mm")
@@ -122,6 +130,13 @@ def main() -> int:
 
     outdir = Path(args.outdir or f"outputs/thermal/{args.sequence.split('_')[0]}")
     outdir.mkdir(parents=True, exist_ok=True)
+    fitted_rates = np.stack([b.source_rate_by_frame for b in result.blocks])
+    reconstruction_rates = np.stack([
+        b.source_rate_by_frame
+        if b.reconstruction_source_rate_by_frame is None
+        else b.reconstruction_source_rate_by_frame
+        for b in result.blocks
+    ])
     np.savez_compressed(
         outdir / "reconstructed_sequence.npz",
         theta_k=result.theta_k.astype(np.float32),
@@ -129,12 +144,16 @@ def main() -> int:
         times_s=result.times_s,
         ambient_c=ambient[:n_powered],
         unknown_mask=result.unknown_mask,
+        lid_transition_mask=result.lid_transition_mask,
+        rebuilt_mask=result.rebuilt_mask,
         board_mask=board,
         heating_rate_k_per_s=heating.astype(np.float32),
-        source_rate_by_frame=np.stack([b.source_rate_by_frame for b in result.blocks]),
+        source_rate_by_frame=reconstruction_rates,
+        ring_fitted_source_rate_by_frame=fitted_rates,
         region_ids=np.array([b.region_id for b in result.blocks]),
         ring_error_k=result.ring_error_k,
         ring_error_no_source_k=result.ring_error_no_source_k,
+        reconstruction_uncertainty_k=result.uncertainty_k.astype(np.float32),
         spread_rate_px2_per_s=result.spread_rate_px2_per_s,
         cooling_rate_per_s=result.cooling_rate_per_s,
         pixel_size_mm=PIXEL_SIZE_MM,
@@ -144,11 +163,15 @@ def main() -> int:
         writer = csv.writer(handle)
         writer.writerow(
             ["kind", "id", "area_mm2", "row_mm", "col_mm", "deepest_mm",
-             "source_rate_k_per_s", "source_rate_scatter_k_per_s",
+             "ring_fitted_source_rate_k_per_s", "ring_fitted_source_rate_scatter_k_per_s",
+             "reconstruction_source_rate_k_per_s",
+             "reconstruction_source_rate_scatter_k_per_s",
              "edge_test_verdict", "edge_test_outward_fraction", "edge_test_gradient_k",
-             "confidence_sd", "touches_border", "source_shape"]
+             "confidence_sd", "touches_border", "source_shape", "interior_fill"]
         )
-        for block in sorted(result.blocks, key=lambda b: -b.source_rate_k_per_s):
+        for block in sorted(
+            result.blocks, key=lambda b: -float(b.reconstruction_source_rate_k_per_s)
+        ):
             verdict = verdicts.get(block.region_id)
             writer.writerow([
                 "block", block.region_id, f"{block.area_mm2:.1f}",
@@ -156,16 +179,18 @@ def main() -> int:
                 f"{block.deepest_mm:.1f}",
                 f"{block.source_rate_k_per_s:.4f}" if block.fitted else "",
                 f"{block.source_rate_spread_k_per_s:.4f}" if block.fitted else "",
+                f"{block.reconstruction_source_rate_k_per_s:.4f}",
+                f"{block.reconstruction_source_rate_spread_k_per_s:.4f}",
                 verdict.verdict if verdict else "not judged",
                 f"{verdict.outward_fraction:.2f}" if verdict else "",
                 f"{verdict.mean_gradient_k:.2f}" if verdict else "",
-                "", block.touches_border, block.source_shape,
+                "", block.touches_border, block.source_shape, block.interior_fill,
             ])
         for spot in spots:
             writer.writerow([
                 "board hot spot", spot.rank, "", f"{spot.row_mm:.1f}", f"{spot.col_mm:.1f}",
-                "0.0", f"{spot.heating_rate_k_per_s:.4f}", "", "", "", "",
-                f"{spot.confidence_sd:+.1f}" if spot.confidence_sd is not None else "", False, "",
+                "0.0", "", "", f"{spot.heating_rate_k_per_s:.4f}", "", "", "", "",
+                f"{spot.confidence_sd:+.1f}" if spot.confidence_sd is not None else "", False, "", "",
             ])
 
     (outdir / "reconstruction_report.json").write_text(
@@ -187,14 +212,17 @@ def main() -> int:
     )
     print(f"\n  wrote {outdir}/reconstructed_sequence.npz ({n_powered} frames), hotspots.csv, reconstruction_report.json")
 
-    print("\n block   area mm2   centre mm     deepest   source K/s   scatter   edge test        source shape")
-    for block in sorted(result.blocks, key=lambda b: -b.source_rate_k_per_s):
+    print("\n block   area mm2   centre mm     deepest   final source K/s   scatter   edge test        interior fill")
+    for block in sorted(
+        result.blocks, key=lambda b: -float(b.reconstruction_source_rate_k_per_s)
+    ):
         verdict = verdicts.get(block.region_id)
         print(
             "   %2d     %7.1f   (%4.1f,%4.1f)   %5.1f mm    %+.4f     %.4f    %-14s  %s"
             % (block.region_id, block.area_mm2, block.centroid_mm[0], block.centroid_mm[1],
-               block.deepest_mm, block.source_rate_k_per_s, block.source_rate_spread_k_per_s,
-               verdict.verdict if verdict else "not judged", block.source_shape)
+               block.deepest_mm, block.reconstruction_source_rate_k_per_s,
+               block.reconstruction_source_rate_spread_k_per_s,
+               verdict.verdict if verdict else "not judged", block.interior_fill)
         )
     return 0
 
