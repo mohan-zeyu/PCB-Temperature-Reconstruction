@@ -64,6 +64,10 @@ give the evidence, and let the owner decide.
   the case10 reconstruction. A separate, optional
   `InteriorTemperatureAnchor` interface exists for boards that expose a corrected
   central temperature; it is not used in the case10 benchmark.
+- **The next model may use one fixed load value as an additional input.** That value
+  is a float from 0 through 1 and stays constant within one recording or forecast
+  session. This is approved future work, not a change to the completed load-blind
+  case10 benchmark.
 - **Relative only — no watts, ever.** See "Units" below.
 - **Plain language, never Greek symbols.** See "Naming" below.
 - Board state is represented by a small **pattern library** with a closed-form
@@ -78,11 +82,35 @@ computation. The approved plan therefore trains locally and keeps `--device` plu
 A self-contained export is still built so a run is reproducible off-machine. **If the
 model grows, revisit this rather than assuming it still holds.**
 
-## Where the work is (2026-08-30, Stage 3c presentation done)
+## Documentation map and authority
 
-Full status, measured constants and the ordered remaining steps live in
-`now-i-need-you-snoopy-kazoo.md` — **read its STATUS block before
-starting anything.** Short version:
+All thermal design and planning documents live in `docs/plans/`. They have different
+roles and must not be treated as four competing task lists:
+
+1. **`CLAUDE.md` is authoritative.** It records the owner's current decisions, the
+   implemented state, hard constraints, and the next approved direction. If another
+   Markdown file conflicts with it, this file wins.
+2. **`docs/plans/stage2_reconstruction.md` is an implemented-method record.** It
+   explains the reconstruction code that already exists; it is not a proposal to redo
+   Stage 2.
+3. **`docs/plans/stage3_forecasting.md` is an implemented-method record.** It explains
+   the completed load-blind case10 forecast, frozen split, rejected source-only model,
+   and saved artifacts.
+4. **`docs/plans/future_fixed_load_forecasting.md` is the approved future plan.** It is
+   blocked on additional fixed-load sessions and must not silently change the current
+   model before that data exists.
+5. **`docs/plans/case10_original_plan.md` is historical provenance.** Its completed
+   status and old checkpoints explain how the project reached the current design, but
+   its body is not an active instruction list.
+
+`docs/dynamic_inverse_zh.md` documents the older dynamic-inverse comparison path. It is
+not one of the current thermal plans and must not be allowed to consume reconstructed
+Stage 2 estimates silently.
+
+## Where the work is (2026-09-01, Stage 3 committed; future load plan documented)
+
+The current status is summarized here. The detailed implemented methods and historical
+record are linked in the documentation map above.
 
 **Done** — `tdp/thermal/sources.py`: the load stop is found from the images (frame 239
 on case10), the cooling rate comes from the warm-up alone (0.00685 /s, response 146 s),
@@ -134,6 +162,101 @@ not silently consume Stage 2 estimates.
 
 **The three numerical deliverables are done** — 240 reconstructed powered frames, a
 forward one-second forecast from any named frame, and `hotspots.csv`.
+
+## Future fixed-load-conditioned model — approved, not implemented
+
+Do this only after the multi-load data gate below is satisfied. The completed case10
+forecast remains the reference result until a replacement passes held-out-session and
+held-out-load tests.
+
+### Model contract
+
+The public input is:
+
+```text
+forecast(starting temperature field, fixed load from 0 through 1, future times)
+```
+
+The load is one scalar and is constant for the whole session. The model does not need a
+time-varying load schedule. If an application changes load, start a new forecast from the
+latest temperature field using the new fixed value. The field at elapsed time zero must
+remain exactly equal to the supplied starting field; load changes the future trajectory,
+not the current temperature.
+
+Reuse the Stage 2 reconstruction and uncertainty weights, the fixed spatial pattern
+library, the stable reduced plate operator, the arbitrary-start projection, the explicit
+unresolved residual, the saved-array interfaces, and the existing evaluation tools.
+
+The learned component maps the fixed load to a load-conditioned settled state in the
+retained physical pattern coordinates. The existing stable plate operator then relaxes
+the supplied starting field toward that state. Start with the smallest smooth constrained
+encoder, and compare it with a learned linear-load baseline before adding capacity.
+
+**Do not reduce this to the three existing source amplitudes.** That exact spatial
+bottleneck already lost to persistence by a wide margin: 2.145 K against 0.270 K. A small
+load encoder may be low-capacity as a function of one scalar, but its output must have
+enough spatial freedom across the retained pattern library to represent the board-wide
+settled response. It must also preserve the SoC plateau and may not hide missing physics
+inside a large unrestricted signed correction.
+
+### Minimum data-collection reference
+
+The minimum validation-grade collection is **five load levels with three independent
+sessions per level: 15 powered sessions total**.
+
+| fixed load | minimum independent sessions | role |
+|---:|---:|---|
+| 0.00 | 3 | idle-powered baseline |
+| 0.25 | 3 | lower unseen-load check |
+| 0.50 | 3 | connects to case09 |
+| 0.75 | 3 | upper unseen-load check |
+| 1.00 | 3 | connects to case10 |
+
+Here, load 0 means the normalized workload is at idle. It does **not** mean that the board
+is unpowered or that its heating rate is zero; this board still dissipates heat at idle.
+
+Three independent sessions are the floor because frames from one session are highly
+correlated. One session can support fitting, a second model selection, and a third an
+untouched final check. **Two repeats per load, 10 sessions total, are useful only for an
+exploratory prototype; they do not provide a clean training/validation/test separation or
+a credible run-to-run uncertainty estimate.** A safer collection target is four repeats at
+the same five loads, or 20 sessions total. Add load levels before adding encoder complexity
+if the response is visibly nonlinear.
+
+If case09 and case10 pass the same-board, same-workload, alignment, load-stability, and
+metadata checks, each may count as one session at 0.50 and 1.00. Under that assumption the
+minimum new collection is **13 sessions**: three each at 0.00, 0.25, and 0.75, plus two
+additional repeats each at 0.50 and 1.00.
+
+Each powered recording must last for at least **five response times** and include a clear
+near-steady interval. Using case10's measured 146 s response as a planning reference gives
+about 730 s, or 12.2 minutes, as the mathematical floor; matching the existing roughly
+25-minute powered recording is safer. Duration is governed by settling evidence, not only
+the clock. Record the actual mean load, its variation, exact thermal timestamps, ambient
+conditions, initial state, workload type, camera configuration, and any corrected central
+temperature sensor. Equal nominal utilization under different CPU/GPU/I/O workloads is
+not automatically the same scalar input.
+
+### Data split and implementation order
+
+- Split by complete sessions, never random frames. Multiple starting windows from one
+  recording remain one experimental unit and do not increase the independent sample count.
+- Hold out complete repeats at seen loads to measure run-to-run generalization.
+- Hold out every session at one intermediate load in turn to test whether the continuous
+  load input works between observed values.
+- Audit the powered interval, footprint reference, alignment, spread rate, cooling rate,
+  and reconstruction diagnostics for every session. The case10 driver contains measured
+  case10 defaults; do not assume the reconstruction is unchanged on new sessions.
+- Build one self-contained multi-session export, freeze the session and held-out-load
+  splits, then fit the smallest load encoder.
+- Compare against persistence, the completed load-blind forecast, and a learned linear-load
+  baseline. A more flexible encoder is justified only if its held-out-load improvement is
+  larger than the files' 0.1 K resolution and remains stable for every load from 0 to 1.
+- Report larger model range where repeated-session evidence is weak or the requested load
+  is far from well-sampled values. Rebuilt footprints remain estimates, never hidden truth.
+
+The complete future design, sample schema, acceptance criteria, and unresolved metadata
+questions are in `docs/plans/future_fixed_load_forecasting.md`.
 
 ### What Stage 2 measured, and where it stops
 
@@ -407,11 +530,6 @@ Mixing them makes an ablation look like a re-measurement.
 Module docstrings explain *why* a choice was made and what it prevents; comments carry
 measured evidence rather than restating the code; every reported quantity carries its
 unit.
-
-
-
-### The initial plan of the project is in `now-i-need-you-snoopy-kazoo.md`
-
 ## For token usage
 
 First of all, make sure tasks completed with quality and quantity guaranteed

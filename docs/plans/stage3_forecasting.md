@@ -1,5 +1,9 @@
 # Stage 3: fixed physical patterns and equilibrium-centred forecasting
 
+**Document role:** implemented Stage 3 method record. This describes the completed
+load-blind case10 model; it is not the future fixed-load plan. `CLAUDE.md` remains
+authoritative for owner decisions and status.
+
 ## Outcome
 
 Stage 3 now provides a forward-only forecast from any reconstructed powered frame to a

@@ -69,7 +69,7 @@ python scripts/figure_forecast.py
 最终的热源驱动重建写入 `outputs/thermal/case10/`。SoC 使用宽分布正热源和同一个
 平板方程生成平滑平台；输出同时保存最终重建源、外圈拟合源、完整重建掩膜和逐像素
 模型不确定度。方法与局限见
-[`docs/reconstruction_after_source_detection.md`](docs/reconstruction_after_source_detection.md)。
+[`docs/plans/stage2_reconstruction.md`](docs/plans/stage2_reconstruction.md)。
 
 Stage 3a 从上述重建归档读取几何、热源和不确定度，生成 64 个慢平板模式及多组
 热源响应模式，并用闭式矩阵解支持任意正时间间隔和直接稳态求解。Stage 3b 冻结
@@ -79,11 +79,16 @@ Stage 3a 从上述重建归档读取几何、热源和不确定度，生成 64 �
 平板算子衰减。留出测试加权 MAE 为 0.191 K，起始帧严格不跳变，且 SoC 的宽平台
 不会退回无热源形状。环境温度采用“保持起始值”的外部情景，不由模型预测；逐像素
 范围是模型范围而非统计置信区间。方法见
-[`docs/forecasting_pattern_model.md`](docs/forecasting_pattern_model.md)。
+[`docs/plans/stage3_forecasting.md`](docs/plans/stage3_forecasting.md)。
 
 Stage 3c 不再拟合模型，只读取冻结产物，生成包含全部 674 个一秒场的 1280×720
 H.264 视频、四关键帧 montage、逐帧误差数组以及留出集消融图。若系统没有 MP4
 编码器则回退为抽样 GIF；montage 和数值数组始终保留。
+
+下一阶段计划把每次实验中固定不变的负载浮点数（0 到 1）作为额外模型输入。该模型
+尚未实现；在至少取得 5 个负载档位、每档 3 次独立实验（共 15 次）之前，当前 case10
+模型保持不变。完整的数据门槛、划分方式和模型约束见
+[`docs/plans/future_fixed_load_forecasting.md`](docs/plans/future_fixed_load_forecasting.md)。
 
 ## 数据说明
 

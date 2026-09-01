@@ -1,5 +1,8 @@
 # Reconstruction after heat-source detection
 
+**Document role:** implemented Stage 2 method record. This describes the current code; it
+is not an open proposal. `CLAUDE.md` remains authoritative for owner decisions and status.
+
 This document describes the current Stage 2 method. It starts after the powered
 part of the sequence, the low-emissivity footprint mask, the cooling rate, the
 spread rate, and the confident heat-source blocks have been identified.

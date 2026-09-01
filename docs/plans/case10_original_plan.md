@@ -1,9 +1,14 @@
 # Heat-source recovery and temperature forecasting for PCB thermal images (case10)
 
-> ## STATUS — read this first (updated 2026-08-30)
+> **DOCUMENT ROLE — HISTORICAL PROVENANCE.** This file preserves the original plan and
+> completed checkpoints. It is not the current task list. `CLAUDE.md` is authoritative;
+> the implemented Stage 2 and Stage 3 records and the future fixed-load plan are the other
+> documents in this directory.
+>
+> ## HISTORICAL COMPLETION SNAPSHOT (updated 2026-08-30)
 >
 > **Phase 0, Phase 1, Stage 2, Stage 3a, Stage 3b, and the Stage 3c presentation are DONE.** Everything below the status block is
-> the original plan; where it conflicts with these numbers, these numbers win.
+> the original plan; where it conflicts with `CLAUDE.md`, `CLAUDE.md` wins.
 >
 > ### Measured and settled (do not re-derive)
 >
@@ -183,7 +188,7 @@
 > use the optional corrected central-temperature sensor interface on hardware that exposes
 > it. Do not tune case10 on the held-out test frames or claim the rebuilt SoC score as truth.
 >
-> ### Three deliverables the owner is waiting for
+> ### Three deliverables requested at that checkpoint (now complete)
 >
 > 1. **DONE:** a reconstructed image for every one of the 240 powered frames.
 > 2. **DONE:** from any named frame, a forward prediction to the settled state at
@@ -520,7 +525,8 @@ stage the whole image set. One `.gitignore` line and one initial commit.
   close); hot spots vs background alone; and a no-source-measurement control. That last one
   goes in the results table from day one, so it cannot quietly go unrun the way the current
   pipeline's losing comparison did.
-- Existing test suite (52 tests, ~37 s) stays green.
+- The then-existing 52-test suite was required to stay green. The current test command and
+  current count are recorded in `CLAUDE.md`.
 
 ## The success metric, chosen before any results exist
 
