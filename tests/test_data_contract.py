@@ -66,6 +66,12 @@ def test_emissivity_is_documented_as_an_assumption_not_a_measurement():
         assert spec.radiometry.sensitivity_sweep
 
 
+def test_paired_full_load_sequences_declare_their_load_and_soc_logs():
+    measurements = load_measurements(MEASUREMENTS)
+    for name in ("case10_rpi4b_bare_full", "case17_rpi4b_painted_full"):
+        assert set(measurements.sequences[name].logs) >= {"cpu_load", "soc_temp"}
+
+
 # --------------------------------------------------------------------------
 # geometry
 # --------------------------------------------------------------------------

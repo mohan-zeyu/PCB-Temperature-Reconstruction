@@ -60,10 +60,18 @@ give the evidence, and let the owner decide.
 - **Ignore the cooling phase.** Only the powered stretch is used: frames 0-239 on
   case10, 0 to 1498 s. Reconstruct those 240 frames; nothing after the load stops.
 - **Forward prediction only**, and it must be able to start from *any* moment.
-- **Infrared images are the default input.** No CPU-load or system log is used in
-  the case10 reconstruction. A separate, optional
-  `InteriorTemperatureAnchor` interface exists for boards that expose a corrected
-  central temperature; it is not used in the case10 benchmark.
+- **case10's default reconstruction is paired and temperature-anchored.** It uses
+  the case10 infrared frames, the painted case17 frames, both recordings' load
+  timing, and both SoC die-temperature logs. `--no-paired-calibration` preserves
+  the former image-only reconstruction as an explicit ablation.
+- **"Hot" means evidence of a source, not proof that the radiometry is trustworthy.**
+  A low-emissivity source can still look hot while reading too cold. The case10
+  unreliable mask is therefore the union of the image-only footprint detector and
+  a paired case17 attenuation audit. No emissivity coefficient is fitted.
+- **A die temperature is not pasted in as a surface temperature.** case17 supplies
+  the time-aligned die-to-painted-surface difference; that difference is removed
+  from the case10 die log before it anchors the centre of the SoC lid. The declared
+  cross-session uncertainty floor is 1.5 K.
 - **The next model may use one fixed load value as an additional input.** That value
   is a float from 0 through 1 and stays constant within one recording or forecast
   session. This is approved future work, not a change to the completed load-blind
@@ -107,22 +115,27 @@ roles and must not be treated as four competing task lists:
 not one of the current thermal plans and must not be allowed to consume reconstructed
 Stage 2 estimates silently.
 
-## Where the work is (2026-09-01, Stage 3 committed; future load plan documented)
+## Where the work is (2026-09-07, paired case10 calibration implemented)
 
 The current status is summarized here. The detailed implemented methods and historical
 record are linked in the documentation map above.
 
-**Done** — `tdp/thermal/sources.py`: the load stop is found from the images (frame 239
-on case10), the cooling rate comes from the warm-up alone (0.00685 /s, response 146 s),
-and heat sources are found in two parts. On case10 that gives one heat-source block
-(the SoC, 269 mm² at (26.1, 32.7) mm, 100 % outward) and one trusted-board hot spot at
-(17.9, 10.3) mm. Figure: `outputs/thermal/case10/phase1_sources.png`.
+**Done** — `tdp/thermal/sources.py` + `tdp/thermal/calibration.py`: the image and load
+log agree that frame 239 is the last powered case10 frame. The cooling rate remains
+0.00685 /s (response 146 s). The paired steady-state audit flags 3,991 pixels, almost
+all already in the image mask, and adds 43 pixels that the image-only detector called
+trustworthy. The resulting SoC block is 272.8 mm² at (26.0, 32.7) mm. The separate
+directly observed hot spot at (17.9, 10.3) mm is retained: case17 does not show the
+large attenuation there that would justify masking it.
 
 **Done** — `tdp/thermal/reconstruct.py`: all 240 powered frames are reconstructed.
 Passive blocks use the ring-fitted source solution; the SoC uses a positive broad
-source in one smooth plate solve across its footprint and transition rim. The saved
-archive includes both the provisional ring-fit and final reconstruction source series,
-the complete rebuilt mask, and a per-pixel model-uncertainty range.
+source in one smooth plate solve across its footprint and transition rim. case17's
+steady painted surface is 78.28 C at the SoC core and 79.25 C at its peak, while its
+die log is 83.04 C. Transferring the 4.76 K die-to-surface difference to case10 gives
+a steady SoC surface core of 77.78 C and peak of **78.29 C**. The same-mask unanchored
+peak is 69.02 C; the old image-only last-frame peak is 68.97 C. The case17-adjusted
+expected case10 peak is 78.75 C, leaving -0.46 K against the 1.5 K acceptance limit.
 
 **Done** — `tdp/thermal/patterns.py` + `tdp/thermal/forecast.py`: the fixed library uses
 64 slow plate modes and source responses for the broad background, SoC footprint and
@@ -135,15 +148,15 @@ detail outside the fixed basis is carried as an explicit initial residual.
 
 **Done** — `tdp/thermal/train_forecast.py`: the export and time split are frozen, with
 three-frame guard gaps around contiguous validation and test blocks. The intuitive fit of
-three non-negative, smooth source histories was tested and rejected: it scores 2.145 K
-weighted test MAE against 0.270 K persistence because three source channels cannot balance
+three non-negative, smooth source histories was tested and rejected: it scores 2.032 K
+weighted test MAE against 0.271 K persistence because three source channels cannot balance
 all 72 board modes. Keep this result as the source-only ablation; do not rescue it with a
 large unconstrained signed correction.
 
 **Done** — the production forecast decays deviations toward a settled full field estimated
 only from the final training block, frames 147-188. It keeps the named starting frame exact,
 uses the stable reduced plate operator, and retains the measured spread 2.0 px^2/s and
-cooling 0.006851 /s under a 0.01 K parsimony rule. It scores 0.185 K validation and 0.191 K
+cooling 0.006850 /s under a 0.01 K parsimony rule. It scores 0.187 K validation and 0.192 K
 held-out test weighted MAE, beating persistence. Run `python scripts/run_forecast_fit.py`,
 then `python scripts/run_forecast.py --start-frame N`; the default frame-0 artifact has 674
 one-second fields through less than 1% remaining deviation.
@@ -151,14 +164,15 @@ one-second fields through less than 1% remaining deviation.
 **Done** — `scripts/figure_forecast.py`: the fixed 1280x720 H.264 presentation contains
 all 674 one-second forecast fields at 24 fps, plus temperature, remaining deviation, model
 range, captured-frame error, and error-curve panels. The saved-field ablation figure reports
-equilibrium 0.191 K, persistence 0.270 K, constant source 1.774 K, smooth positive sources
-2.145 K, and no source 15.336 K. It never refits the model. MP4 failure falls back to a
+equilibrium 0.192 K, persistence 0.271 K, constant source 1.574 K, smooth positive sources
+2.032 K, and no source 15.178 K. It never refits the model. MP4 failure falls back to a
 sampled GIF; the montage and arrays are always written.
 
-**Then** — do not tune case10 further on its held-out test. New accuracy work needs new
-evidence: another painted/truth board or a corrected central-temperature sensor on hardware
-that exposes one. The old `tdp.dynamic_inverse` path remains a legacy comparison and does
-not silently consume Stage 2 estimates.
+**Then** — do not tune case10 further on either the same case17 calibration session or
+its Stage 3 held-out frames. A genuinely independent absolute-accuracy test now needs a
+third same-load session with painted surface and synchronized die temperature. The old
+`tdp.dynamic_inverse` path remains a legacy comparison and does not silently consume
+Stage 2 estimates.
 
 **The three numerical deliverables are done** — 240 reconstructed powered frames, a
 forward one-second forecast from any named frame, and `hotspots.csv`.
@@ -193,7 +207,7 @@ the supplied starting field toward that state. Start with the smallest smooth co
 encoder, and compare it with a learned linear-load baseline before adding capacity.
 
 **Do not reduce this to the three existing source amplitudes.** That exact spatial
-bottleneck already lost to persistence by a wide margin: 2.145 K against 0.270 K. A small
+bottleneck already lost to persistence by a wide margin: 2.032 K against 0.271 K. A small
 load encoder may be low-capacity as a function of one scalar, but its output must have
 enough spatial freedom across the retained pattern library to represent the board-wide
 settled response. It must also preserve the SoC plateau and may not hide missing physics
@@ -260,38 +274,38 @@ questions are in `docs/plans/future_fixed_load_forecasting.md`.
 
 ### What Stage 2 measured, and where it stops
 
-Scored on case17 — the same board painted matte black, so the parts case10 must guess at
-are *measured* there. Imposing case10's mask and rebuilding the 39.5% it hides:
+case17 is now an input to the absolute-level calibration, so it must not be presented as
+an independent validation set. It still supports a useful within-session shape diagnostic:
+hide the case10 mask in case17, reconstruct from case17's remaining pixels, then score
+against the pixels deliberately hidden. After excluding case17's own small image-detected
+mask, this rebuilds 32.4% of its board:
 
 | | mean error | bias |
 |---|---|---|
-| edge-only fill (the old way) | 3.68 K | **−2.10 K**, cold every frame |
-| source-driven, source spread uniformly over each block | 2.63 K | **+0.01 K** |
-| provisional **centre-weighted** source shape | **2.37 K** | +0.37 K |
-| final **broad-source plate** lid | **2.29 K** | +0.37 K |
+| edge-only fill (the old way) | 3.70 K | **−3.56 K**, cold every frame |
+| source-driven, source spread uniformly over each block | 2.17 K | −0.51 K |
+| provisional **centre-weighted** source shape | 1.79 K | −0.09 K |
+| final **broad-source plate** lid | **1.77 K** | −0.09 K |
 
-Killing that systematic cold bias is the point of the whole stage. **These numbers replace
-an earlier table here that read 4.34 / −3.22 / 2.72 / +0.12 K; those were stale and did not
-match what the code produced.** Docstring, figure and this file now all report the same run.
+Killing the systematic source-free cold bias is the point of the shape solve. These are
+method diagnostics on the calibration session, not an estimate of independent case10
+absolute accuracy.
 
-The remaining 2.29 K splits into a **wrong level** and a **wrong pattern** inside each block:
+The remaining 1.77 K splits into a **wrong level** and a **wrong pattern** inside each block:
 
 - Fitting each block's source to case17's *hidden truth* — the best any single number per
-  block can do — leaves 1.57 K, of which 1.56 K is pattern and 0.20 K level. **No extra
+  block can do — leaves 1.10 K, of which 1.09 K is pattern and 0.15 K level. **No extra
   source parameter can help the pattern.**
-- **The board-wide bias hides the per-block level errors.** They reach **±4.4 K** and
-  cancel: block 1 is +4.5 K hot while the SoC block is −4.4 K cold, and the average comes
-  out near zero. Always report the per-block level, never only the aggregate.
-- An earlier claim here — "the ring fit's own gap is not a conditioning problem: condition
-  number 81, and per-sector, ridge and plain least squares agree to within 0.04 K" — was
-  **reasoned wrongly and is withdrawn.** Three estimators agreeing shows they extract the
-  same information, not that the information suffices. What sets the level error is the
-  ring residual times the amplification: **1.87 K of residual against condition number 81.**
+- A low aggregate bias does not establish the level of any particular hidden block.
+  Three ring estimators agreeing only shows that they extract the same exterior
+  information. It does not make an unobserved lid level identifiable. That is why the
+  SoC now receives an independent temperature anchor.
 
 ### The source's shape inside a block, not just its size (2026-08-29)
 
 A die under an SoC lid dissipates over a few mm; the lid spreads it over ten times that
-area. A **uniform** source over the whole 269 mm² therefore builds a plateau — about right
+area. In the pre-anchor shape ablation, a **uniform** source over the whole 269 mm² built
+a plateau — about right
 at the block's rim, which measured board pins from a pixel away, and several kelvin cold in
 the middle. That is exactly what the owner saw. Weighting the source by distance from the
 block's own rim (exponent 1.0, `CONCENTRATION_EXPONENT`) matches the geometry at **no extra
@@ -313,30 +327,28 @@ Choose the shape **per block from the edge test**, never globally:
 ### The final lid shape is now a broad-source plate solve (2026-08-30)
 
 The owner rejected the centre-weighted bell as the final visible temperature of a
-heat-spreading lid. case17 confirms the problem: at frame 120 it is 0.76 K cold at the
-SoC edge, 3.75 K cold 4-5 px inside, and 3.83 K hot at the centre. The fitted bell is now
-used only to retain the exterior-ring estimate of the block's **mean level**.
+heat-spreading lid. The case17 diagnostics confirm that a broad-source plate is the
+better final shape. The fitted bell remains only as the provisional ring-fit model.
 
 For a confidently heat-producing lid, the production fill first takes one extra rim pixel
 into an explicit `lid_transition_mask`; case10's nominally trusted first ring is still 0.5 K
 colder than the second and is residual lid-rim contamination. The original footprint and
 this rim are then solved as one plate domain with a non-negative source distributed over
-the lid. Its amplitude is chosen per frame to preserve the provisional footprint mean.
+the lid. Without an anchor, its amplitude preserves the provisional footprint mean. With
+the default case10 anchor, it instead matches the corrected central surface temperature.
 There is no pasted curve, blending band, or exactly flat core: the broad plateau and its
 transition to the measured board are generated by the same conduction-and-cooling
-equation. On case17 this changes the SoC error **2.51 -> 1.99 K** and the original
-masked area **2.37 -> 2.29 K**; including the rebuilt rim gives **2.26 K**. On case10
-frame 200 the result is still unmistakably source-driven: the SoC core is **41.66 K**
-above ambient against **29.45 K** for a source-free solve. The source-shaped result
-remains the ablation and one side of the reported model range.
+equation. In the current case17 within-session diagnostic, the broad lid changes the SoC
+error from 2.93 K to 2.78 K and the whole hidden-area error from 1.79 K to 1.77 K. On
+case10, the calibrated steady surface core is 77.78 C and the peak is 78.29 C, rather
+than the unanchored 69.02 C peak.
 
 Every reconstruction now reports a per-pixel uncertainty range. It is explicitly a
-**model range, not a statistical confidence interval**: held-out-ring error enlarged by
-distance, plus disagreement between the provisional central-source and final broad-source
-plate solutions. An optional
-`InteriorTemperatureAnchor` supplies a frame-aligned central surface temperature and its
-uncertainty. `vcgencmd` measures the die, not the lid surface, so a die-to-surface
-difference must be removed or included in that uncertainty.
+**model range, not a statistical confidence interval**. Passive lids combine held-out-ring
+error enlarged by distance with disagreement between provisional and broad-source models.
+For the anchored SoC, the discarded unanchored correction is recorded as a diagnostic,
+not counted as uncertainty; its range combines the ring/shape term with the declared
+1.5 K cross-session anchor uncertainty.
 
 ### Reading the pattern under a lid: tried four ways, all lose
 
@@ -440,8 +452,9 @@ Write equations as sentences where possible. Every reported quantity carries its
 - There is **no measured pixel scale**. It is derived from the 85x56 mm PCB outline
   resampled onto the canonical 157x103 grid (0.5425 mm/px); `pixel_size_calibrated`
   stays `false`.
-- 44.7% of case10's board is untrustworthy, the deepest point 20 mm from good data.
-  case17 (painted matte black) has only 16% and is the natural cross-check.
+- The paired mask marks 38.1% of case10's analysis board as untrustworthy, with the
+  deepest point about 20 mm from good data. case17 (painted matte black) is the
+  calibration reference; it is no longer an independent cross-check.
 
 ## Things that broke and must not be reintroduced
 
@@ -478,8 +491,8 @@ Write equations as sentences where possible. Every reported quantity carries its
   the owner spotted and reported as the two runs looking 180° apart. The data was never
   affected; only the overlay. Pass explicit coordinate arrays
   (`ax.contour(grid_x, grid_y, Z)`); a test now fails if `contour` is given an `extent`.
-- **A board-average bias can hide per-block errors that cancel.** Stage 2's +0.01 K bias
-  covers ±4.4 K per-block level errors of opposite sign. Choose the per-block metric first.
+- **A board-average bias can hide per-block errors that cancel.** Choose the per-block
+  metric first, and never claim an unobserved lid level from a small aggregate error.
 - **Never split frames randomly.** Adjacent frames on a ~6 s cadence are near
   duplicates. Use contiguous blocks with guard bands.
 - **Make regularisers dimensionless.** An absolute penalty on a rate of order 1e-3

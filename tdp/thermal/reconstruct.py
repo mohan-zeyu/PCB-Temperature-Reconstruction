@@ -5,17 +5,19 @@ underneath it.  That makes a peak in the middle of a block mathematically imposs
 -- a source-free solution attains its extremes on its boundary -- so the main chip
 always came out colder than its own edges.
 
-Measured against ground truth: case17 is the same board painted matte black, so the
-components case10 has to guess at are *measured* there.  Imposing case10's mask on
-case17 and reconstructing the 39.5 % of the board it hides gives
+The spatial method was measured on case17, the same board painted matte black, so
+the components case10 has to guess at are *measured* there.  Imposing case10's
+mask on case17 and reconstructing the hidden area gave
 
-    edge-only fill, no source   3.68 K mean absolute error, bias -2.10 K
-    source-driven, uniform      2.63 K mean absolute error, bias +0.01 K
-    provisional centre-         2.37 K mean absolute error, bias +0.37 K
+    edge-only fill, no source   3.70 K mean absolute error, bias -3.56 K
+    source-driven, uniform      2.17 K mean absolute error, bias -0.51 K
+    provisional centre-         1.79 K mean absolute error, bias -0.09 K
       weighted source
-    broad-source plate lid      2.29 K mean absolute error, bias +0.37 K
+    broad-source plate lid      1.77 K mean absolute error, bias -0.09 K
 
-The bias is the point.  The old fill was not merely noisy under a lid, it was
+case17 is also an input to the current case10 level calibration, so this is a
+same-session shape diagnostic rather than a held-out validation score.  The bias
+is still the point.  The old fill was not merely noisy under a lid, it was
 systematically 3 K cold, every frame, in the same direction -- which is exactly the
 error a missing source makes.  That bias is now gone.
 
@@ -78,34 +80,34 @@ imposed bell was several kelvin cold through the broad area around the SoC and h
 at the very centre -- a small die and a spreading lid had been collapsed into one
 plate domain.
 
-The production lid fill therefore preserves the provisional block mean but replaces
-its shape with one physical plate solution.  A positive source is distributed over
-the whole SoC footprint, and its amplitude is chosen so that the solved footprint
-has the fitted mean.  The solve includes one extra rim pixel because the nominally
+The production lid fill replaces the provisional shape with one physical plate
+solution.  A positive source is distributed over the whole SoC footprint.  Without
+an anchor its amplitude preserves the provisional fitted mean; with an anchor it
+matches the supplied central surface temperature.  The solve includes one extra
+rim pixel because the nominally
 trusted first ring on case10 is still cold.  There is no pasted curve or flat core:
 the broad plateau, its remaining curvature, and the transition into the board all
-come from the same discrete conduction equation.  Across all case17 powered frames
-this changes the SoC error 2.51 -> about 1.99 K and the original masked area
-2.37 -> about 2.29 K without removing the source-driven plateau.  See
+come from the same discrete conduction equation.  In the current case17
+within-session diagnostic this changes the SoC error 2.93 -> 2.78 K and the whole
+hidden-area error 1.79 -> 1.77 K without removing the source-driven plateau.  See
 :func:`_broad_source_lids`.
 
-The old source-shaped result is kept as the alternative model in the reported
-uncertainty range.  It can also be requested directly as an ablation.
+For an unanchored lid, the old source-shaped result is kept as the alternative
+model in the reported uncertainty range.  For an anchored lid, the deliberate
+level correction is reported separately and the declared anchor uncertainty is
+combined with the local ring/shape range.  The old result can also be requested
+directly as an ablation.
 
 What this cannot do, measured
 -----------------------------
 Fitting the source rates to case17's *hidden truth* instead of to the ring -- the
-best any per-block constant could do -- gives 1.57 K, of which 1.56 K is shape and
-0.20 K level.  So no extra *source* parameter can help the pattern.
+best any per-block constant could do -- gives 1.10 K, of which 1.09 K is shape and
+0.15 K level.  So no extra *source* parameter can help the pattern.
 
-The ring fit gives away another ~1 K of *level* on top of that, and that is a real
-information limit rather than a numerical one, but the earlier claim here that it is
-"not a conditioning problem" was reasoned wrongly.  Three estimators agreeing to
-0.04 K shows they all extract the same information, not that the information is
-sufficient.  What actually sets the level error is the ring residual times the
-amplification: 1.87 K of residual against condition number 81.  Per-block level
-errors reach +-4.4 K and cancel to a board-wide bias near zero, so the aggregate
-bias hides them -- report the per-block level, not just the average.
+The remaining level gap is a real information limit rather than evidence that the
+ring fit is numerical truth.  Three estimators agreeing only shows that they all
+extract the same exterior information; it does not identify the hidden lid level.
+The case10 driver therefore supplies the independently calibrated surface anchor.
 
 Reading structure *inside* a block was the obvious remaining source of information,
 and it was tried four ways and loses (all scored on case17, gain and reflection
@@ -546,6 +548,9 @@ def _broad_source_lids(
     transition_mask = claimed & ~footprint_mask
     rebuilt_mask = footprint_mask | transition_mask
     broad_rates: dict[int, list[float]] = {region_id: [] for region_id in region_ids}
+    anchor_adjustments: dict[int, list[float]] = {
+        region_id: [] for region_id in anchor_by_id
+    }
     slope_mismatches: list[float] = []
     trusted = board_mask & ~rebuilt_mask
     edge_samples = {
@@ -588,10 +593,17 @@ def _broad_source_lids(
                 1.0 + local_depth / max(float(spread_distance_px), 1e-6)
             )
             model_difference = np.abs(solved - old)
-            anchor_extra = 0.0 if anchor is None else float(anchor[1][frame_index])
-            uncertainty[frame_index, expanded] = (
-                local_fit + model_difference + anchor_extra
-            )
+            if anchor is None:
+                uncertainty[frame_index, expanded] = local_fit + model_difference
+            else:
+                # The anchor deliberately replaces the ring-inferred lid level.
+                # Counting that correction itself as uncertainty would say a
+                # measured constraint becomes less informative the more it fixes.
+                # Keep the discarded-model disagreement as a diagnostic, while
+                # combining the ring/shape range and supplied anchor uncertainty.
+                anchor_extra = float(anchor[1][frame_index])
+                uncertainty[frame_index, expanded] = np.hypot(local_fit, anchor_extra)
+                anchor_adjustments[region_id].append(float(np.mean(model_difference)))
 
             for sample in edge_samples[region_id]:
                 (
@@ -619,6 +631,11 @@ def _broad_source_lids(
         "n_interior_temperature_anchors": len(anchor_by_id),
         "n_lid_transition_px": int(transition_mask.sum()),
         "interior_temperature_anchor_labels": [value[2] for value in anchor_by_id.values()],
+        "anchor_replacement_of_unanchored_model_median_k": {
+            str(region_id): float(np.median(values))
+            for region_id, values in anchor_adjustments.items()
+            if values
+        },
         "edge_slope_mismatch_median_k_per_px": (
             float(np.median(slope_mismatches)) if slope_mismatches else None
         ),
