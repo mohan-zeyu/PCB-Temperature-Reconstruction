@@ -31,3 +31,8 @@ include = ["tdp*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+
+[dependency-groups]
+dev = [
+    "tqdm>=4.70.1",
+]

@@ -30,7 +30,11 @@ from pathlib import Path
 
 import numpy as np
 
-from tdp.thermal.calibration import sequence_start_epoch
+from tdp.thermal.calibration import (
+    longest_high_load_interval,
+    read_timestamped_values,
+    sequence_start_epoch,
+)
 
 def level_temperature_series(seq: dict, powered: np.ndarray, pixels: np.ndarray) -> np.ndarray:
     """Median theta over trusted pixels per frame - the state key used to
@@ -125,6 +129,22 @@ def theta_series(arrays: dict) -> np.ndarray:
     raw = np.asarray(arrays["raw_temperature_c"], dtype=np.float64)
     ambient = np.asarray(arrays["ambient_c"], dtype=np.float64)
     return raw - ambient[:, None, None]
+
+
+def load_interval_from_measurements(
+    sequence: str, measurements, threshold_percent: float = 90.0
+) -> object:
+    """Longest sustained load interval for a sequence, read from its CPU log.
+
+    Full-load sessions reach >=90 %; half-load sessions plateau near 50 % and
+    must be read with a lower threshold, otherwise the log never qualifies.
+    """
+    spec = measurements.sequences[sequence]
+    log = read_timestamped_values(
+        Path(measurements.dataset_root) / spec.logs["cpu_load"],
+        value_columns=("cpu_usage_percent", "total_percent"),
+    )
+    return longest_high_load_interval(log, threshold_percent=threshold_percent)
 
 
 def powered_frames_by_clock(
@@ -273,14 +293,25 @@ def build_paired_archive(
 
     # Label-noise diagnostics: on trusted pixels y and x should agree (both
     # sessions read the truth there); on masked pixels y - x is the correction
-    # the model must learn.
+    # the model must learn.  Masked statistics stay on the shared board: a few
+    # footprint pixels can sit where the bare session has no valid surface and
+    # no label exists.
     residual = y_theta - x_theta
+    masked_bool = board_bool & unknown_bool
     trusted_mae = np.abs(residual[:, trusted]).mean(axis=1)
     trusted_bias = residual[:, trusted].mean(axis=1)
-    masked_mae = np.abs(residual[:, unknown_bool]).mean(axis=1)
+    masked_mae = np.abs(residual[:, masked_bool]).mean(axis=1)
     board_mae = np.abs(residual[:, board_bool]).mean(axis=1)
 
-    splits = contiguous_split(len(bare_powered))
+    try:
+        splits = contiguous_split(len(bare_powered))
+    except ValueError:
+        # Short sequences (e.g. the tape sessions) cannot hold the default
+        # 240-frame blocks.  This experiment trains on the whole archive anyway,
+        # so one train block with empty val/test is recorded rather than
+        # inventing a split the owner did not ask for.
+        full = np.arange(len(bare_powered))
+        splits = {"train": full, "val": full[:0], "test": full[:0]}
     np.savez_compressed(
         out_path,
         x_theta=x_theta.astype(np.float32),
@@ -307,15 +338,18 @@ def build_paired_archive(
         "load_value": float(load_value),
         "board_px": int(board_bool.sum()),
         "trusted_px": int(trusted.sum()),
-        "masked_px": int(unknown_bool.sum()),
+        "masked_px": int(masked_bool.sum()),
         "split_blocks": {
-            name: [int(splits[name][0]), int(splits[name][-1]) + 1] for name in splits
+            name: [int(splits[name][0]), int(splits[name][-1]) + 1] if len(splits[name]) else []
+            for name in splits
         },
         "trusted_label_noise_mae_k_by_split": {
-            name: float(np.abs(residual[splits[name]][:, trusted]).mean()) for name in splits
+            name: float(np.abs(residual[splits[name]][:, trusted]).mean()) if len(splits[name]) else 0.0
+            for name in splits
         },
         "masked_correction_mae_k_by_split": {
-            name: float(np.abs(residual[splits[name]][:, unknown_bool]).mean()) for name in splits
+            name: float(np.abs(residual[splits[name]][:, masked_bool]).mean()) if len(splits[name]) else 0.0
+            for name in splits
         },
         "steady_trusted_label_noise_mae_k": float(np.abs(residual[first_over:][:, trusted]).mean())
         if first_over < len(bare_powered)

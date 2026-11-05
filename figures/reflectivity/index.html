@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Influence of Surface Reflectivity on IR Readings</title>
+<style>
+  :root {
+    --text: #1f2937;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --accent: #b91c1c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Segoe UI", sans-serif;
+    color: var(--text);
+    background: #ffffff;
+    line-height: 1.6;
+  }
+  .page {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 56px 32px 72px;
+  }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 24px; margin-bottom: 8px; }
+  h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.01em; }
+  .subtitle { color: var(--muted); font-size: 15px; margin-top: 6px; }
+  .intro {
+    font-size: 15px; color: #374151;
+    margin: 24px 0 0;
+    padding: 14px 18px;
+    background: #f9fafb;
+    border-left: 3px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+  }
+  section { margin-top: 48px; }
+  .group-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 6px; }
+  .group-tag {
+    font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--accent); border: 1px solid #fecaca; background: #fef2f2;
+    padding: 2px 10px; border-radius: 999px; white-space: nowrap;
+  }
+  h2 { font-size: 19px; font-weight: 600; }
+  .group-desc { color: var(--muted); font-size: 14px; margin-bottom: 20px; }
+
+  /* Group 1: two portrait raw images side by side */
+  .pair {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 28px;
+  }
+  figure.card { min-width: 0; }
+  .frame {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: #fafafa;
+  }
+  .frame img { display: block; width: 100%; height: auto; }
+  figure.card figcaption { padding: 12px 4px 0; }
+  figure.card .title { font-size: 15px; font-weight: 600; }
+  figure.card .note { font-size: 13.5px; color: var(--muted); margin-top: 3px; }
+
+  /* Group 2: processed matplotlib figures, stacked and aligned */
+  .stack { display: grid; gap: 28px; }
+  .stack figure.card .frame { background: #ffffff; }
+  .stack figcaption { padding: 10px 4px 0; }
+
+  footer {
+    margin-top: 64px; padding-top: 18px; border-top: 1px solid var(--line);
+    font-size: 12.5px; color: #9ca3af;
+  }
+  footer code {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11.5px;
+    background: #f3f4f6; padding: 1px 5px; border-radius: 4px;
+  }
+  @media (max-width: 720px) { .pair { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <h1>Influence of Surface Reflectivity on Infrared Readings</h1>
+    <div class="subtitle">Same Raspberry Pi 4B under the same 100 % CPU load — bare board (case10) vs. matte black painted board (case17), camera emissivity fixed at 0.95</div>
+    <p class="intro">
+      The two groups give two perspectives on the same effect. <b>Group 1</b> shows what the thermal
+      camera itself reports: on the bare board the metal SoC lid — physically the hottest part — reads
+      dark and cold, because its low emissivity makes it reflect the cool room instead of emitting.
+      Matte black paint removes that artifact. <b>Group 2</b> shows the same effect after Python
+      processing of the exported raw temperature fields: the two steady-state maps and the radiometric
+      analysis behind the 30–40 K gap on the lid.
+    </p>
+  </header>
+
+  <section>
+    <div class="group-head">
+      <span class="group-tag">Group 1</span>
+      <h2>Raw IR camera images — bare vs. painted</h2>
+    </div>
+    <p class="group-desc">Uncalibrated camera JPEGs at steady state, each with its own auto color scale (units: K). Identical load, identical die temperature — only the surface finish differs.</p>
+    <div class="pair">
+      <figure class="card">
+        <div class="frame"><img src="raw_ir_bare_case10.jpeg" alt="Raw IR image, bare PCB (case10)"></div>
+        <figcaption>
+          <div class="title">Bare board (case10)</div>
+          <div class="note">Scale 297.9–318.0 K. The SoC lid (centre) appears <i>darker than the board around it</i> — its shiny metal surface reflects the ~26.7 °C room, so the camera under-reads the physically hottest spot by 30–40 K.</div>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="frame"><img src="raw_ir_painted_case17.jpeg" alt="Raw IR image, black painted PCB (case17)"></div>
+        <figcaption>
+          <div class="title">Matte black painted board (case17)</div>
+          <div class="note">Scale 300.4–319.5 K. With emissivity ≈ 0.95 the same lid now reads truthfully and dominates the image (max 79.2 °C on the processed field). Both sessions sit at a die temperature of ≈ 82.5–82.9 °C.</div>
+        </figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section>
+    <div class="group-head">
+      <span class="group-tag">Group 2</span>
+      <h2>Python-processed fields — aligned together</h2>
+    </div>
+    <p class="group-desc">Matplotlib analyses of the exported temperature matrices (steady state, mean of the last 25 powered frames), rendered at a common width and stacked for direct comparison.</p>
+    <div class="stack">
+      <figure class="card">
+        <div class="frame"><img src="processed_steady_maps_and_difference.png" alt="Steady-state maps of bare and painted boards and their difference"></div>
+        <figcaption>
+          <div class="title">Steady-state maps and painted − bare difference</div>
+          <div class="note">Left: bare board raw (ambient 26.7 °C) — its maximum, 68.5 °C, sits on a small trusted hot spot while the lid reads cold. Middle: painted board raw (ambient 28.8 °C) — the maximum, 79.2 °C, has moved onto the SoC lid. Right: difference above each board's own ambient — near zero (≈ +0.15 K median) on trusted pixels, up to +40 K over the lid footprint: the radiometric correction the low-emissivity region requires.</div>
+        </figcaption>
+      </figure>
+      <figure class="card">
+        <div class="frame"><img src="processed_soc_and_radiometry.png" alt="SoC block crops and apparent reading versus true emissivity"></div>
+        <figcaption>
+          <div class="title">SoC block crops and the radiometric explanation</div>
+          <div class="note">Top: the same 927-pixel SoC footprint in both sessions — suppressed on the bare board, truthful on the painted one. The rightmost panel computes the apparent camera reading of a real 79 °C lid as a function of its true emissivity: at ε ≈ 0.2–0.3 the camera (ε setting 0.95) reports only 40–50 °C, matching the observed bare-board lid readings of 37–46 °C.</div>
+        </figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <footer>
+    Sources — raw images: <code>实验数据（黑胶带版）/case10_树莓派4B裸板_满负载/photo/HM20260726174236.jpeg</code>,
+    <code>case17_树莓派4B黑色哑光漆_满负载/photo/HM20260727230204.jpeg</code>;
+    processed figures: <code>tmp/unet_findings/steady_maps_and_difference.png</code>,
+    <code>tmp/unet_findings/soc_and_radiometry.png</code>. Numbers per <code>tmp/unet_findings/findings_steady_mismatch.md</code>.
+  </footer>
+
+</div>
+</body>
+</html>
