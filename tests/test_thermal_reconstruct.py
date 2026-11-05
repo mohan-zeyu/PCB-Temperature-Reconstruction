@@ -452,6 +452,11 @@ def test_interior_temperature_anchor_sets_the_central_level_and_uncertainty(die_
     # The supplied sensor uncertainty is added to, not substituted for, the IR
     # model range because die-to-lid correction and spatial shape remain uncertain.
     assert np.all(result.uncertainty_k[:, core] >= 0.4)
+    # The anchor intentionally replaces the unanchored level.  Its correction
+    # must be reported as a diagnostic, not added back as if fixing a large bias
+    # made the calibrated temperature less certain.
+    assert np.median(result.uncertainty_k[:, core]) < 2.0
+    assert str(hot) in result.report["anchor_replacement_of_unanchored_model_median_k"]
     assert result.report["interior_temperature_anchor_labels"] == ["corrected SoC sensor"]
 
 

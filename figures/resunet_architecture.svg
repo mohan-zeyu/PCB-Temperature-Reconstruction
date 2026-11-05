@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ResidualUNet architecture figure (tdp/unet/model.py, verified against the code
+  on 2026-09-12: 538,753 parameters at base_channels=24, depth=3; input
+  (1, 3, 103, 157) -> correction (1, 1, 103, 157)).
+
+  Fidelity notes (things the drawing simplifies, all confirmed in model.py):
+  * Each downsample/upsample step is a Sequential that also applies
+    GroupNorm(8) and SiLU after its convolution (model.py lines 74-94); the
+    figure labels only the convolution, as requested.
+  * model.py instantiates a third encoder _ConvBlock (96 channels,
+    self.encoders[2]) that forward() never calls; the 96-channel ConvBlock that
+    actually runs is self.bottleneck. The 538,753-parameter count returned by
+    n_parameters() includes the unused block. The figure draws the executed
+    path (two encoder levels + bottleneck), which is why the left column shows
+    24 and 48 and the bottom block is the 96-channel bottleneck.
+  * The residual add is applied outside forward() (train.py line 174);
+    the network itself outputs only the correction field.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1640" height="1350"
+     viewBox="0 0 1640 1350"
+     font-family="Helvetica, Arial, 'DejaVu Sans', sans-serif">
+  <defs>
+    <marker id="arrowDark" viewBox="0 0 10 8" refX="9" refY="4"
+            markerWidth="10" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#1A1A1A"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 8" refX="9" refY="4"
+            markerWidth="11" markerHeight="8.8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 4 L 0 8 z" fill="#0072B2"/>
+    </marker>
+    <marker id="arrowVerm" viewBox="0 0 12 10" refX="11" refY="5"
+            markerWidth="14" markerHeight="11.7" orient="auto-start-reverse">
+      <path d="M 0 0 L 12 5 L 0 10 z" fill="#D55E00"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1640" height="1350" fill="#FFFFFF"/>
+
+  <!-- container A: network body -->
+  <rect x="370" y="185" width="1245" height="855" rx="14"
+        fill="#F2F2F2" stroke="#B8B8B8" stroke-width="1.5"/>
+  <text x="1597" y="210" text-anchor="end" font-size="21" font-style="italic"
+        fill="#777777">network body</text>
+
+  <!-- container B: input strip + residual add (L-shaped, warm tint) -->
+  <path d="M 46 195 H 352 Q 366 195 366 209 V 571 Q 366 585 352 585 H 110
+           Q 96 585 96 599 V 1036 Q 96 1050 110 1050 H 1586 Q 1600 1050 1600 1064
+           V 1171 Q 1600 1185 1586 1185 H 46 Q 32 1185 32 1171 V 209
+           Q 32 195 46 195 Z"
+        fill="#FBF2E9" stroke="#DCBFA6" stroke-width="1.5"/>
+
+  <!-- dashed training/size annotation -->
+  <rect x="40" y="26" width="720" height="132" rx="10" fill="none"
+        stroke="#888888" stroke-width="1.4" stroke-dasharray="7 5"/>
+  <text x="58" y="56" font-size="23" fill="#333333">538,753 parameters at base_channels = 24, depth = 3</text>
+  <text x="58" y="88" font-size="23" fill="#333333">240 powered frames, complete-map L1 over board pixels,</text>
+  <text x="58" y="120" font-size="23" fill="#333333">Adam 1e-3 with cosine annealing, batch 12,</text>
+  <text x="58" y="146" font-size="23" fill="#333333">200 epochs, CPU</text>
+
+  <!-- ================= input strip ================= -->
+  <text x="201" y="214" text-anchor="middle" font-size="21" font-style="italic"
+        fill="#777777">inputs</text>
+
+  <rect x="56" y="250" width="290" height="84" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="334" y="271" text-anchor="end" font-size="18" fill="#888888">channel 0</text>
+  <text x="201" y="288" text-anchor="middle" font-size="25" fill="#111111">temperature above</text>
+  <text x="201" y="318" text-anchor="middle" font-size="25" fill="#111111">ambient / 60 K</text>
+
+  <rect x="56" y="354" width="290" height="84" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="334" y="375" text-anchor="end" font-size="18" fill="#888888">channel 1</text>
+  <text x="201" y="404" text-anchor="middle" font-size="25" fill="#111111">board mask</text>
+
+  <rect x="56" y="458" width="290" height="84" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="334" y="479" text-anchor="end" font-size="18" fill="#888888">channel 2</text>
+  <text x="201" y="494" text-anchor="middle" font-size="25" fill="#111111">untrustworthy-</text>
+  <text x="201" y="524" text-anchor="middle" font-size="25" fill="#111111">footprint mask</text>
+
+  <text x="201" y="572" text-anchor="middle" font-size="21" fill="#777777">each 103 rows × 157 columns</text>
+
+  <!-- residual tap: channel 0 runs left, then under the whole U -->
+  <path d="M 56 292 L 46 292 L 46 1160 L 1484 1160 L 1484 1156"
+        fill="none" stroke="#D55E00" stroke-width="4.5" marker-end="url(#arrowVerm)"/>
+  <text x="500" y="1122" text-anchor="middle" font-size="21" font-style="italic"
+        fill="#777777">added outside the network</text>
+  <text x="500" y="1148" text-anchor="middle" font-size="29" font-weight="bold"
+        fill="#D55E00">input temperature · channel 0</text>
+
+  <!-- ================= head ================= -->
+  <path d="M 346 292 L 388 292" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+  <text x="508" y="203" text-anchor="middle" font-size="21" fill="#777777">head</text>
+  <rect x="388" y="215" width="240" height="135" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="508" y="260" text-anchor="middle" font-size="27" font-weight="bold" fill="#111111">3 → 24</text>
+  <text x="508" y="294" text-anchor="middle" font-size="25" fill="#111111">conv 3×3</text>
+  <text x="508" y="324" text-anchor="middle" font-size="22" fill="#111111">GroupNorm(8), SiLU</text>
+
+  <!-- reflect-pad annotation (applied before the head) -->
+  <path d="M 367 300 L 420 378" fill="none" stroke="#999999" stroke-width="1"/>
+  <text x="496" y="396" text-anchor="middle" font-size="25" fill="#333333">reflect-pad</text>
+  <text x="496" y="424" text-anchor="middle" font-size="24" fill="#333333">103 × 157 → 104 × 160</text>
+  <text x="496" y="450" text-anchor="middle" font-size="21" fill="#777777">(multiple of 8)</text>
+
+  <path d="M 628 287 L 665 287" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+
+  <!-- ================= encoder column ================= -->
+  <text x="780" y="203" text-anchor="middle" font-size="21" fill="#777777">encoder</text>
+  <rect x="665" y="215" width="230" height="135" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="780" y="260" text-anchor="middle" font-size="25" font-weight="bold" fill="#111111">24 · 104 × 160</text>
+  <text x="780" y="294" text-anchor="middle" font-size="25" fill="#111111">conv 3×3 ×2</text>
+  <text x="780" y="324" text-anchor="middle" font-size="22" fill="#111111">GroupNorm(8), SiLU</text>
+
+  <path d="M 780 350 L 780 400" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+  <rect x="645" y="400" width="270" height="74" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="780" y="432" text-anchor="middle" font-size="25" fill="#111111">conv 3×3, stride 2</text>
+  <text x="780" y="460" text-anchor="middle" font-size="22" fill="#444444">24 → 48</text>
+  <path d="M 780 474 L 780 530" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+
+  <text x="780" y="518" text-anchor="middle" font-size="21" fill="#777777">encoder</text>
+  <rect x="665" y="530" width="230" height="135" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="780" y="575" text-anchor="middle" font-size="25" font-weight="bold" fill="#111111">48 · 52 × 80</text>
+  <text x="780" y="609" text-anchor="middle" font-size="25" fill="#111111">conv 3×3 ×2</text>
+  <text x="780" y="639" text-anchor="middle" font-size="22" fill="#111111">GroupNorm(8), SiLU</text>
+
+  <path d="M 780 665 L 780 710" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+  <rect x="645" y="710" width="270" height="74" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="780" y="742" text-anchor="middle" font-size="25" fill="#111111">conv 3×3, stride 2</text>
+  <text x="780" y="770" text-anchor="middle" font-size="22" fill="#444444">48 → 96</text>
+  <path d="M 780 784 L 780 830 L 950 830 L 950 880" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+
+  <!-- ================= bottleneck ================= -->
+  <text x="1030" y="868" text-anchor="middle" font-size="21" fill="#777777">bottleneck</text>
+  <rect x="915" y="880" width="230" height="135" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="1030" y="925" text-anchor="middle" font-size="25" font-weight="bold" fill="#111111">96 · 26 × 40</text>
+  <text x="1030" y="959" text-anchor="middle" font-size="25" fill="#111111">conv 3×3 ×2</text>
+  <text x="1030" y="989" text-anchor="middle" font-size="22" fill="#111111">GroupNorm(8), SiLU</text>
+
+  <!-- ================= decoder column ================= -->
+  <path d="M 1110 880 L 1110 860 L 1280 860 L 1280 838" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+  <rect x="1145" y="730" width="270" height="104" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="1280" y="764" text-anchor="middle" font-size="24" fill="#111111">conv transpose 2×2,</text>
+  <text x="1280" y="792" text-anchor="middle" font-size="24" fill="#111111">stride 2</text>
+  <text x="1280" y="820" text-anchor="middle" font-size="22" fill="#444444">96 → 48</text>
+
+  <path d="M 1280 730 L 1280 669" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+  <circle cx="1280" cy="700" r="13" fill="#FFFFFF" stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="1304" y="707" font-size="21" fill="#333333">concat · 48 + 48</text>
+
+  <text x="1280" y="518" text-anchor="middle" font-size="21" fill="#777777">decoder</text>
+  <rect x="1165" y="530" width="230" height="135" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="1280" y="575" text-anchor="middle" font-size="25" font-weight="bold" fill="#111111">48 · 52 × 80</text>
+  <text x="1280" y="609" text-anchor="middle" font-size="25" fill="#111111">conv 3×3 ×2</text>
+  <text x="1280" y="639" text-anchor="middle" font-size="22" fill="#111111">GroupNorm(8), SiLU</text>
+
+  <path d="M 1280 530 L 1280 508" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+  <rect x="1145" y="404" width="270" height="104" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="1280" y="438" text-anchor="middle" font-size="24" fill="#111111">conv transpose 2×2,</text>
+  <text x="1280" y="466" text-anchor="middle" font-size="24" fill="#111111">stride 2</text>
+  <text x="1280" y="494" text-anchor="middle" font-size="22" fill="#444444">48 → 24</text>
+
+  <path d="M 1280 404 L 1280 353" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+  <circle cx="1280" cy="379" r="13" fill="#FFFFFF" stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="1304" y="386" font-size="21" fill="#333333">concat · 24 + 24</text>
+
+  <text x="1280" y="203" text-anchor="middle" font-size="21" fill="#777777">decoder</text>
+  <rect x="1165" y="215" width="230" height="135" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="1280" y="260" text-anchor="middle" font-size="25" font-weight="bold" fill="#111111">24 · 104 × 160</text>
+  <text x="1280" y="294" text-anchor="middle" font-size="25" fill="#111111">conv 3×3 ×2</text>
+  <text x="1280" y="324" text-anchor="middle" font-size="22" fill="#111111">GroupNorm(8), SiLU</text>
+
+  <!-- ================= skip connections (over the top) ================= -->
+  <path d="M 845 215 C 940 62 1148 108 1150 330 C 1152 379 1215 379 1266 379"
+        fill="none" stroke="#0072B2" stroke-width="3.5" marker-end="url(#arrowBlue)"/>
+  <text x="1015" y="90" text-anchor="middle" font-size="28" font-weight="bold"
+        fill="#0072B2">skip: concatenated on channels</text>
+
+  <path d="M 845 530 C 935 435 1140 445 1148 650 C 1152 700 1215 700 1266 700"
+        fill="none" stroke="#0072B2" stroke-width="3.5" marker-end="url(#arrowBlue)"/>
+  <text x="1030" y="458" text-anchor="middle" font-size="24" fill="#0072B2">skip</text>
+
+  <!-- ================= tail, crop, correction ================= -->
+  <path d="M 1395 287 L 1485 287 L 1485 541" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+  <rect x="1395" y="545" width="190" height="86" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="1490" y="582" text-anchor="middle" font-size="24" fill="#111111">tail: conv 1×1</text>
+  <text x="1490" y="614" text-anchor="middle" font-size="26" font-weight="bold" fill="#111111">24 → 1</text>
+
+  <path d="M 1484 631 L 1484 652" fill="none" stroke="#1A1A1A" stroke-width="2.5"/>
+  <text x="1490" y="676" text-anchor="middle" font-size="23" fill="#777777">crop 104 × 160</text>
+  <text x="1490" y="702" text-anchor="middle" font-size="23" fill="#777777">→ 103 × 157</text>
+  <path d="M 1484 714 L 1484 846" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+
+  <rect x="1368" y="850" width="232" height="90" rx="8" fill="#FFFFFF"
+        stroke="#1A1A1A" stroke-width="1.8"/>
+  <text x="1484" y="889" text-anchor="middle" font-size="25" font-weight="bold" fill="#111111">correction field</text>
+  <text x="1484" y="919" text-anchor="middle" font-size="22" fill="#111111">103 × 157 · kelvin</text>
+
+  <path d="M 1484 940 L 1484 1098" fill="none" stroke="#1A1A1A"
+        stroke-width="2.5" marker-end="url(#arrowDark)"/>
+
+  <!-- ================= residual add ================= -->
+  <circle cx="1484" cy="1124" r="30" fill="#FFFFFF" stroke="#D55E00" stroke-width="4"/>
+  <path d="M 1460 1124 H 1508 M 1484 1100 V 1148" stroke="#D55E00" stroke-width="4"/>
+  <path d="M 1454 1124 L 1424 1124" fill="none" stroke="#D55E00"
+        stroke-width="4" marker-end="url(#arrowVerm)"/>
+
+  <rect x="890" y="1080" width="530" height="88" rx="8" fill="#FFFFFF"
+        stroke="#D55E00" stroke-width="2.5"/>
+  <text x="1155" y="1118" text-anchor="middle" font-size="27" font-weight="bold"
+        fill="#111111">predicted temperature =</text>
+  <text x="1155" y="1152" text-anchor="middle" font-size="27" fill="#111111">input temperature + correction</text>
+
+  <!-- ================= caption ================= -->
+  <text x="820" y="1218" text-anchor="middle" font-size="24" fill="#222222">The network sees the temperature field in a fixed unit, temperature above ambient divided by 60 K, and</text>
+  <text x="820" y="1251" text-anchor="middle" font-size="24" fill="#222222">predicts only a temperature correction in kelvin. The prediction is the input temperature plus that</text>
+  <text x="820" y="1284" text-anchor="middle" font-size="24" fill="#222222">correction, so capacity concentrates on the ~38 % untrustworthy-footprint pixels instead of relearning</text>
+  <text x="820" y="1317" text-anchor="middle" font-size="24" fill="#222222">the ~62 % trusted ones. Feature-map labels give channels · height × width.</text>
+</svg>

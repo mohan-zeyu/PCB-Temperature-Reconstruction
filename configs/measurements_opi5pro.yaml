@@ -1,0 +1,150 @@
+# Acquisition metadata for the Orange Pi 5 Pro part of the same IR campaign.
+#
+# Same campaign and camera as configs/measurements_v3.yaml, different board:
+# the Raspberry Pi config's 85 x 56 mm outline must not be applied here, so the
+# Orange Pi sessions live in their own file with their own length standard.
+#
+# Orange Pi 5 Pro PCB outline: 89 x 56 x 1.6 mm, from the vendor page
+# http://www.orangepi.cn/html/hardWare/computerAndMicrocontrollers/details/Orange-Pi-5-Pro.html
+# It is a geometric estimate exactly like the Pi's: the camera records no focal
+# length, so pixel_size.calibrated stays false.
+#
+# Surface: "bare" vs "black_tape" (黑胶带) - the high-emissivity twin used as the
+# painted/tape truth for the same board, mirroring case10 <-> case17 on the Pi.
+
+dataset_root: 实验数据（黑胶带版）
+
+board_size_mm: [89.0, 56.0]
+board_size_note: Orange Pi 5 Pro PCB outline (vendor dimensions)
+
+sequences:
+
+  case12_opi5pro_bare_half:
+    case_dir: case12_香橙派5Pro裸板_半负载
+    device: orange_pi_5_pro
+    surface: bare
+    load: half
+    board:
+      # Auto-detected, then pinned so a rerun cannot silently re-frame the
+      # board.  Half-load sessions plateau near 50 % CPU, so their load interval
+      # is read with threshold_percent=40, not 90.
+      output_hw: [164, 103]
+      search_angle_deg: 20.0
+      center_rc: [88.34, 106.95]
+      size_hw: [135.61, 85.33]
+      angle_deg: -0.8
+    radiometry:
+      assumed_emissivity: 0.95
+      recorded: false
+      reflected_temperature_c: null
+      band_exponent: 4.0
+    repair:
+      enabled: true
+      method: conduction
+      trust_decay_px: 6.0
+      max_extrapolation_px: 24.0
+    logs:
+      cpu_load: 记录csv文件/opi5pro_half_load.csv
+      soc_temp: 记录csv文件/opi5pro_half_load.csv
+    phase_overrides: []
+    notes: >-
+      Orange Pi 5 Pro, bare board, half load.  Load and SoC die temperature share
+      one log (columns cpu_usage_percent and max_temp_c).
+
+  case13_opi5pro_bare_full:
+    case_dir: case13_香橙派5Pro裸板_满负载
+    device: orange_pi_5_pro
+    surface: bare
+    load: full
+    board:
+      # Auto-detected, then pinned for reproducibility.
+      output_hw: [164, 103]
+      search_angle_deg: 20.0
+      center_rc: [87.86, 109.09]
+      size_hw: [136.12, 85.65]
+      angle_deg: -0.6
+    radiometry:
+      assumed_emissivity: 0.95
+      recorded: false
+      reflected_temperature_c: null
+      band_exponent: 4.0
+    repair:
+      enabled: true
+      method: conduction
+      trust_decay_px: 6.0
+      max_extrapolation_px: 24.0
+    logs:
+      cpu_load: 记录csv文件/opi5pro_full_load.csv
+      soc_temp: 记录csv文件/opi5pro_full_load.csv
+    phase_overrides: []
+    notes: >-
+      Orange Pi 5 Pro, bare board, full load.  Same physical board as case12
+      before taping, and the bare twin of the tape run case15.
+
+  case14_opi5pro_tape_half:
+    case_dir: case14_香橙派5Pro黑胶带_半负载
+    device: orange_pi_5_pro
+    surface: black_tape
+    load: half
+    board:
+      # The automatic detector caught the tape sheet, not the PCB: its window was
+      # 174.1 x 109.6 raw px, about 23 % too large and shifted.  The corrected
+      # window below maximises structural agreement with the bare half session
+      # (zero-mean NCC 0.68 -> 0.93; trusted tape-minus-bare |MAE| 5.3 -> 2.3 K).
+      output_hw: [164, 103]
+      search_angle_deg: 20.0
+      center_rc: [108.5, 109.5]
+      size_hw: [141.03, 88.74]
+      angle_deg: 0.0
+    radiometry:
+      assumed_emissivity: 0.95
+      recorded: false
+      reflected_temperature_c: null
+      band_exponent: 4.0
+    repair:
+      enabled: true
+      method: conduction
+      trust_decay_px: 6.0
+      max_extrapolation_px: 24.0
+    logs:
+      # The half-load tape session was logged in two files: the powered stretch
+      # and a separate cooling stretch.  Only the powered log is needed here.
+      cpu_load: 记录csv文件/opi5pro_tape_half_load.csv
+      soc_temp: 记录csv文件/opi5pro_tape_half_load.csv
+    phase_overrides: []
+    notes: >-
+      Orange Pi 5 Pro, black-tape surface, half load.  High-emissivity twin of
+      case12, used as the tape truth for the half-load pair.
+
+  case15_opi5pro_tape_full:
+    case_dir: case15_香橙派5Pro黑胶带_满负载
+    device: orange_pi_5_pro
+    surface: black_tape
+    load: full
+    board:
+      # Same detector failure as case14 (same tape sheet, same bias): the raw
+      # 174.1 x 109.6 window was ~23 % too large and shifted.  Corrected window
+      # from structural agreement with the bare full session (NCC 0.68 -> 0.94;
+      # trusted |MAE| 5.3 -> 2.5 K).
+      output_hw: [164, 103]
+      search_angle_deg: 20.0
+      center_rc: [108.5, 101.5]
+      size_hw: [141.03, 88.74]
+      angle_deg: 0.0
+    radiometry:
+      assumed_emissivity: 0.95
+      recorded: false
+      reflected_temperature_c: null
+      band_exponent: 4.0
+    repair:
+      enabled: true
+      method: conduction
+      trust_decay_px: 6.0
+      max_extrapolation_px: 24.0
+    logs:
+      cpu_load: 记录csv文件/opi5pro_tape_full_load_new.csv
+      soc_temp: 记录csv文件/opi5pro_tape_full_load_new.csv
+    phase_overrides: []
+    notes: >-
+      Orange Pi 5 Pro, black-tape surface, full load.  High-emissivity twin of
+      case13, used as the tape truth for the full-load pair.

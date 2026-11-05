@@ -9,6 +9,8 @@ authoritative for owner decisions and status.
 Stage 3 now provides a forward-only forecast from any reconstructed powered frame to a
 settled state. The selected starting field is reproduced exactly, the broad SoC plateau is
 retained, and the internal field relaxes smoothly under a stable plate operator.
+Its case10 input is the paired, temperature-anchored Stage 2 field; future SoC
+temperature measurements are not required during rollout.
 
 Run the stages in order:
 
@@ -50,7 +52,7 @@ smooth modes alone lose compact heating even when their board-average error look
 
 Every retained source response is compared with a fine-grid plate solve at the active
 rate. The acceptance threshold is 0.10 K over the source region; the current worst error
-is below `1e-10 K`. The fixed library's archive projection MAE is 0.596 K. That is an
+is below `1e-10 K`. The fixed library's archive projection MAE is 0.683 K. That is an
 honest truncation diagnostic, not a forecast score.
 
 ## Closed-form physical evolution
@@ -89,8 +91,8 @@ but it is not expressive enough for this board:
 
 | held-out test model | weighted MAE |
 |---|---:|
-| positive smooth source histories | 2.145 K |
-| persistence from the starting frame | 0.270 K |
+| positive smooth source histories | 2.032 K |
+| persistence from the starting frame | 0.271 K |
 
 Three source channels cannot balance the 72 modes created by spatially heterogeneous
 capacity, cooling, and imperfectly observed sources. Adding a large free signed residual
@@ -131,13 +133,13 @@ cooling 0.006851/s, and nominal residual decay.
 
 | score | weighted MAE |
 |---|---:|
-| validation forward prediction | 0.185 K |
-| held-out test forward prediction | 0.191 K |
-| held-out test persistence | 0.270 K |
-| frame 0 rollout over all 240 measured powered frames | 0.422 K |
+| validation forward prediction | 0.187 K |
+| held-out test forward prediction | 0.192 K |
+| held-out test persistence | 0.271 K |
+| frame 0 rollout over all 240 measured powered frames | 0.427 K |
 
-The directly measured part of the held-out test also gives 0.191 K. The SoC footprint
-value is 0.155 K, but it is explicitly agreement with Stage 2's estimate rather than a
+The directly measured part of the held-out test gives 0.192 K. The SoC footprint
+value is 0.226 K, but it is explicitly agreement with Stage 2's estimate rather than a
 measurement under the low-emissivity lid.
 
 These scores test forward windows: the starting frame is supplied and only subsequent
@@ -158,9 +160,11 @@ an ambient-temperature prediction. Absolute temperature is recovered as:
 temperature in Celsius = forecast above ambient + declared ambient scenario
 ```
 
-The per-pixel range is also explicit. It transitions from the Stage 2 starting range to
-the training-only settled range and adds the measured held-out forward discrepancy as the
-forecast takes over. The settled range has median 0.338 K and 95th percentile 2.522 K.
+The per-pixel range is also explicit. Stage 2's SoC range includes the declared 1.5 K
+cross-session surface-anchor floor. During a forecast it transitions from the starting
+range to the training-only settled range and adds the measured held-out forward
+discrepancy as the forecast takes over. The settled range has median 0.343 K and 95th
+percentile 2.416 K.
 It is a sensitivity/model range, not a calibrated confidence interval.
 
 ## Public interface

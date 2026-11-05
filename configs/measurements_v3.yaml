@@ -79,13 +79,20 @@ sequences:
       method: conduction
       trust_decay_px: 6.0
       max_extrapolation_px: 24.0
-    logs: {}
+    logs:
+      # One combined file records both 100% load timing and the SoC die
+      # temperature.  Together with the painted IR surface it calibrates the
+      # die-to-visible-surface difference used by case10's default paired anchor.
+      cpu_load: 记录csv文件/rpi4b_painted_full_load.csv
+      soc_temp: 记录csv文件/rpi4b_painted_full_load.csv
     phase_overrides: []
     notes: >-
       Same board and load as case10 but painted matte black, so the low-
       emissivity metal is covered and the measured field needs no repair.  Used
-      as the independent cross-check on the case10 repair and on the identified
-      rates.  Different session, so ambient and staging differ.
+      as the paired reliability and SoC surface-temperature calibration reference
+      for case10.  It is not an independent held-out check.  Different session, so
+      ambient and staging differ and the transferred anchor carries an uncertainty
+      floor.
 
   case09_rpi4b_bare_half:
     case_dir: case09_树莓派4B裸板_半负载

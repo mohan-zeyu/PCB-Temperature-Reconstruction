@@ -13,20 +13,54 @@ conductivity, heat capacity, or power.
 
 ## 1. Inputs
 
-The reconstruction uses:
+The default case10 reconstruction uses:
 
 - the raw infrared temperature above the frame's ambient temperature;
 - the exact capture time of every frame;
-- a fixed binary mask covering the untrustworthy component footprints plus a
-  one-pixel halo;
+- the painted case17 infrared sequence at the same full load;
+- the absolute sequence clocks, CPU-load logs, and SoC die-temperature logs for
+  both sessions;
+- a binary mask formed from the image-detected footprints plus the paired
+  attenuation audit;
 - the trusted-board heating-rate map measured outside those footprints;
 - the measured cooling rate and the selected spread rate; and
 - the footprint IDs confidently classified as heat sources by the edge test.
 
-The raw footprint readings are never used as temperature data because reflection
-and low emissivity make them unreliable.
+The raw case10 footprint readings are never used as temperature data because
+reflection and low emissivity make them unreliable. `--no-paired-calibration`
+keeps the previous image-only reconstruction as an explicit ablation.
 
-## 2. Plate relation used for each frame
+## 2. Paired reliability audit and SoC surface anchor
+
+A hot apparent pixel is evidence for a heat source, but it is not evidence that
+the reported temperature is radiometrically trustworthy. A low-emissivity source
+can remain hotter than its surroundings while still reading many kelvin too cold.
+
+The case10 mask therefore receives a second check. The code takes the final
+180 seconds of the longest interval at or above 90% logged load in case10 and
+case17, subtracts each frame's ambient temperature, and compares the two median
+maps. A compact region whose painted reading exceeds its bare reading by more
+than 5 K is added to the unreliable mask. This is a binary reliability audit,
+not a fitted emissivity map. On the current data it flags 3,991 pixels, of which
+43 were not already in the 6,428-pixel image-only mask.
+
+The SoC lid's absolute level needs a separate constraint because exterior board
+temperatures do not uniquely determine a low-emissivity interior level. Both die
+logs are linearly aligned to the infrared timestamps without silent extrapolation.
+For case17, the painted surface temperature is measured in the deepest quarter
+of the case10 SoC footprint. Its die-to-surface difference is mapped by elapsed
+time since load onset and becomes constant at the reference steady-state mean.
+Subtracting that difference from the case10 die log gives the case10 surface
+anchor. A 1.5 K uncertainty floor declares the unmeasured session-to-session
+transfer error.
+
+The two recordings pass the spatial check: all 162 pixels in case17's largest
+steady top-one-percent hot patch fall inside the case10 SoC footprint. case17 is
+therefore a calibration input and no longer an independent held-out validation
+set. Its hide-and-reconstruct score remains useful only as a within-session shape
+diagnostic.
+
+## 3. Plate relation used for each frame
 
 After division by the unknown areal heat capacity, the temperature movie obeys
 
@@ -53,7 +87,7 @@ an invented initial state.
 The warming rate is calculated at every frame by fitting a local straight line to
 the nearby frames and their real timestamps.
 
-## 3. Fitting one source rate for each block and frame
+## 4. Fitting one source rate for each block and frame
 
 The heating rate and warming rate cannot be trusted inside a footprint. Only their
 difference enters the per-frame equation, so the current method fits one source
@@ -74,7 +108,7 @@ This fit turns the temperature response around each component into a quantitativ
 source rate. Small blocks with too little surrounding evidence are assigned zero
 source rate and filled from their surroundings.
 
-## 4. Provisional source shape and fitted level
+## 5. Provisional source shape and fitted level
 
 The ring fit supplies one mean source rate, but the solver still needs a spatial
 shape before it can translate that rate into a provisional temperature level.
@@ -89,7 +123,7 @@ used only to estimate the block's mean level from the exterior ring. Its bell
 shape is not accepted as the final lid temperature: `case17` showed that it made
 the middle too hot and the broad area around the middle too cold.
 
-## 5. Production reconstruction of passive blocks
+## 6. Production reconstruction of passive blocks
 
 After fitting the rates, the held-out ring is restored as trusted data. For each
 frame:
@@ -106,7 +140,7 @@ frame:
 Passive blocks retain this plate solution. Heat-producing lids receive the
 broad-source plate reconstruction below.
 
-## 6. Broad-source plate reconstruction for a heat-producing lid
+## 7. Broad-source plate reconstruction for a heat-producing lid
 
 The final SoC fill deliberately stays simple. It keeps the provisional solution's
 mean level, but replaces its unjustified central-bump pattern with a second plate
@@ -119,8 +153,9 @@ solve driven by a positive broad source:
    plate domain. The measured board immediately outside it supplies the boundary.
 3. Distribute one non-negative source uniformly over the original lid footprint.
 4. Precompute the lid's response to one unit of that source.
-5. For each frame, choose the source amplitude that makes the original footprint's
-   mean temperature equal the ring-fitted provisional mean.
+5. For each frame, choose the source amplitude that matches the calibrated central
+   surface temperature when an anchor is supplied; otherwise preserve the
+   ring-fitted provisional footprint mean.
 6. Use the resulting plate solution directly. Do not paste a curve, flatten a
    core, or blend temperatures afterward.
 
@@ -131,33 +166,35 @@ needed to carry heat outward. The visible plateau is broad, but it is not exactl
 flat and the source cannot disappear because its fitted amplitude is constrained
 to be non-negative.
 
-On `case17`, across all powered frames, this changes the SoC error from 2.51 K to
-1.99 K and the original hidden-area error from 2.37 K to 2.29 K; including the
-explicit rim gives 2.26 K. At frame 120 the reconstructed SoC retains a broad
-dome/plateau rather than returning to the old source-free bowl.
+In the current case17 within-session diagnostic, the broad-source lid gives
+2.78 K mean SoC error and 1.77 K error over the whole deliberately hidden area.
+The corresponding centre-weighted values are 2.93 K and 1.79 K. These diagnose
+spatial shape only because case17 also supplies the absolute calibration.
 
-The same check on regenerated `case10` frame 200 is more direct: the broad-source
-SoC mean is 40.06 K above ambient versus 32.81 K for the source-free plate solve.
-In its deepest quarter the values are 41.66 K versus 29.45 K. Thus smoothing the
-shape did not smooth away the heat source; it adds 12.21 K in the core while
-leaving a gentle 0.74 K range across that central area.
+In case10's final 180-second steady window, case17 measures 78.28 C at the SoC
+surface core, 79.25 C at its surface peak, and 83.04 C at the die. The transferred
+anchor gives case10 a 77.78 C core and 78.29 C reconstructed surface peak. The
+same combined mask without the anchor reaches only 69.02 C. After allowing for
+the sessions' different die temperatures, the case17-based expected peak is
+78.75 C, so the reconstruction differs by -0.46 K and passes the 1.5 K limit.
 
-## 7. Uncertainty: what the infrared data did not determine
+## 8. Uncertainty: what the infrared data did not determine
 
 Every reconstructed frame now carries `uncertainty_k` over the footprint pixels.
-It is explicitly a **model range, not a statistical confidence interval**. It
-combines:
+It is explicitly a **model range, not a statistical confidence interval**.
+For an unanchored lid it combines:
 
 - the error left on the trusted ring that was hidden during fitting, enlarged as
   distance from trusted data increases; and
 - the difference between the provisional central-source solution and the final
   broad-source plate solution.
 
-The range is intentionally conservative. It cannot turn an unobserved lid level
-into a measurement, and per-block level errors remain possible even when the
-board-wide bias looks small.
+For the anchored SoC, the corrected surface series replaces the unanchored level.
+The size of that correction is saved as a diagnostic rather than added back as
+uncertainty. Its range combines the local ring/shape term with the 1.5 K
+cross-session anchor floor in quadrature.
 
-## 8. Optional central-temperature interface
+## 9. Central-temperature interface and case10 default
 
 `InteriorTemperatureAnchor` accepts one frame-aligned central temperature and its
 uncertainty for a named footprint. When supplied, it sets the mean of the deepest
@@ -169,6 +206,8 @@ die, not the visible lid surface. A known die-to-surface difference must be remo
 first. If it is not known, it belongs in the supplied uncertainty; the die reading
 must not silently be pasted in as an exact surface temperature.
 
+`scripts/run_reconstruct.py` now constructs this anchor by default for case10 using
+`transfer_surface_anchor`. The generic interface remains available to other callers.
 An anchor below the source-free boundary solution is rejected because satisfying it
 would require the declared heat source to become a negative source.
 
@@ -190,9 +229,10 @@ result = reconstruct_sequence(
 )
 ```
 
-## 9. Implementation locations
+## 10. Implementation locations
 
 - Pipeline driver: `scripts/run_reconstruct.py`
+- Log alignment, paired audit, and surface transfer: `tdp/thermal/calibration.py`
 - Per-frame fit and reconstruction: `tdp/thermal/reconstruct.py`
 - Sparse plate solver: `tdp/data/emissivity.py::solve_plate`
 - Saved result: `outputs/thermal/case10/reconstructed_sequence.npz`
@@ -205,7 +245,10 @@ The two source series are deliberately distinct:
 - `BlockSource.reconstruction_source_rate_by_frame` and the saved
   `source_rate_by_frame` are the rates actually used by the final plate solve.
 
-They differ for a broad-source lid because source shape changes the rate needed
-to preserve the same fitted mean temperature. The archive also saves
-`unknown_mask`, `lid_transition_mask`, their union as `rebuilt_mask`, and the
-model range as `reconstruction_uncertainty_k`.
+They differ for a broad-source lid because source shape or the temperature anchor
+changes the rate needed by the final solve. The archive also saves
+`image_only_unknown_mask`, `paired_attenuation_mask`, `paired_attenuation_k`, the
+combined `unknown_mask`, `lid_transition_mask`, their union as `rebuilt_mask`, the
+SoC surface anchor and its uncertainty, and the model range as
+`reconstruction_uncertainty_k`. `reconstruction_report.json` records all temporal,
+spatial, calibration, and acceptance diagnostics.

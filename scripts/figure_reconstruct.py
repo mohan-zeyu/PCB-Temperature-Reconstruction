@@ -1,7 +1,8 @@
-"""Figure for Stage 2: what the fill does on case10, and how far off it is on case17."""
+"""Figure for Stage 2: calibrated case10 and a same-session case17 shape check."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import matplotlib
@@ -9,7 +10,6 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.patches import Patch
 from scipy.ndimage import binary_dilation, distance_transform_edt, label
 
 from tdp import thermal as th
@@ -22,19 +22,37 @@ OUT = Path("outputs/thermal/case10")
 
 
 def case17_check():
-    """Impose case10's mask on the painted board, where the truth underneath is known."""
-    data = np.load("outputs/dynamic_inverse/case17_rpi4b_painted_full/latest/temperature_corrected_sequence.npz")
-    raw = data["raw_temperature_c"].astype(np.float64)
-    ambient = data["ambient_c"].astype(np.float64)
-    times = data["timestamps_s"].astype(np.float64)
-    board = data["valid_mask"]
+    """Check fill shape inside the painted calibration session's measured field.
+
+    case17 now contributes to case10's default calibration, so this is deliberately
+    described as a same-session method diagnostic rather than held-out validation.
+    """
+    source = Path(
+        "outputs/dynamic_inverse/case17_rpi4b_painted_full/latest/"
+        "temperature_corrected_sequence.npz"
+    )
+    with np.load(source) as data:
+        raw = data["raw_temperature_c"].astype(np.float64)
+        ambient = data["ambient_c"].astype(np.float64)
+        times = data["timestamps_s"].astype(np.float64)
+        board = data["valid_mask"].astype(bool)
     theta = raw - ambient[:, None, None]
-    own = em.detect_low_emissivity(theta[215], halo_px=1).mask
-    hidden = np.load(OUT / "reconstructed_sequence.npz")["unknown_mask"] & board & ~own
+    weight = np.where(board, 1.0, 0.0)
+    mean = (theta * weight).reshape(len(raw), -1).sum(1) / weight.sum()
+    n = th.find_load_drop(mean, times).frame_index + 1
+    diagnostic_frame = min(100, n - 1)
+    own = em.detect_low_emissivity(theta[diagnostic_frame], halo_px=1).mask
+    with np.load(OUT / "reconstructed_sequence.npz") as case10:
+        hidden = case10["unknown_mask"].astype(bool) & board & ~own
 
     weight = np.where(board, 1.0, 0.0) * (~hidden)
     mean = (theta * weight).reshape(len(raw), -1).sum(1) / weight.sum()
-    n = th.find_load_drop(mean, times).frame_index + 1
+    checked_n = th.find_load_drop(mean, times).frame_index + 1
+    if abs(checked_n - n) > 1:
+        raise ValueError(
+            f"case17 powered-frame detection changed from {n} to {checked_n} "
+            "after applying the diagnostic mask"
+        )
     cooling = th.fit_cooling_rate(mean[:n], times[:n]).cooling_rate_per_s
     heating = th.measure_heating_rate(
         theta[:n], times[:n], cooling_rate_per_s=cooling,
@@ -97,7 +115,7 @@ def case17_check():
     # Where case17's own hottest patch is, located with no reference to case10 at
     # all.  This is the alignment check: if the two runs were 180 degrees apart it
     # would land on the connector bank instead of inside the SoC outline.
-    late = theta[min(120, n - 1)]
+    late = theta[diagnostic_frame]
     patch = late > np.percentile(late[board], 99.0)
     plab, pn = label(patch)
     biggest = max(range(1, pn + 1), key=lambda k: (plab == k).sum())
@@ -112,7 +130,8 @@ def case17_check():
         transition=result.lid_transition_mask, check=check,
         edge_bias=float((edge[:, hidden] - truth).mean()),
         edge_error=float(np.abs(edge[:, hidden] - truth).mean()),
-        frame=min(120, n - 1), soc=soc, soc_id=soc_id,
+        hidden_fraction=float(hidden[board].mean()),
+        frame=diagnostic_frame, soc=soc, soc_id=soc_id,
         patch_rc=(float(rr.mean()), float(cc.mean())), patch_px=int(patch.sum()),
         patch_in_soc=int((patch & soc).sum()),
         patch_rot_rc=tuple(float(v.mean()) for v in np.nonzero(np.rot90(patch, 2))),
@@ -120,13 +139,30 @@ def case17_check():
 
 
 def main() -> int:
-    run = np.load(OUT / "reconstructed_sequence.npz")
-    built, measured = run["theta_k"], run["measured_theta_k"]
-    mask, times = run["unknown_mask"], run["times_s"]
-    transition = run["lid_transition_mask"] if "lid_transition_mask" in run else np.zeros_like(mask)
-    rebuilt_mask = run["rebuilt_mask"] if "rebuilt_mask" in run else mask | transition
-    ring, ring0 = run["ring_error_k"], run["ring_error_no_source_k"]
-    rates, ids = run["source_rate_by_frame"], run["region_ids"]
+    with np.load(OUT / "reconstructed_sequence.npz") as run:
+        built = run["theta_k"].copy()
+        measured = run["measured_theta_k"].copy()
+        mask = run["unknown_mask"].astype(bool)
+        times = run["times_s"].copy()
+        transition = (
+            run["lid_transition_mask"].astype(bool)
+            if "lid_transition_mask" in run
+            else np.zeros_like(mask)
+        )
+        rebuilt_mask = (
+            run["rebuilt_mask"].astype(bool)
+            if "rebuilt_mask" in run
+            else mask | transition
+        )
+        ring = run["ring_error_k"].copy()
+        ring0 = run["ring_error_no_source_k"].copy()
+        rates = run["source_rate_by_frame"].copy()
+        ids = run["region_ids"].copy()
+    calibration = json.loads((OUT / "reconstruction_report.json").read_text())[
+        "calibration"
+    ]
+    if not calibration.get("enabled"):
+        raise ValueError("the Stage 2 figure requires the paired case10 calibration")
     labels, _ = label(mask, structure=np.ones((3, 3)))
     edge = rebuilt_mask ^ binary_dilation(rebuilt_mask, CROSS)
     depth = distance_transform_edt(rebuilt_mask) * PX
@@ -164,7 +200,7 @@ def main() -> int:
 
     a = axes[0, 1]
     board_map(a, built[show], "2. Reconstructed, same frame\n"
-              "blocks filled by conduction with a fitted heat source underneath")
+              "SoC level anchored by the two die logs and painted surface")
     outline(a, np.where(edge, 1.0, 0.0), levels=[0.5], colors="cyan", linewidths=0.8)
 
     a = axes[0, 2]
@@ -210,7 +246,7 @@ def main() -> int:
     rebuilt17 = m17 | c17["transition"]
     hi17 = float(np.nanmax(c17["truth"][frame17]))
     a = axes[1, 1]
-    board_map(a, c17["truth"][frame17], "6. case17, painted: MEASURED\n"
+    board_map(a, c17["truth"][frame17], "6. case17 calibration session: MEASURED\n"
               "its own hottest patch (+) falls %d of %d px inside\n"
               "case10's SoC outline: the two runs are aligned"
               % (c17["patch_in_soc"], c17["patch_px"]), vmax=hi17)
@@ -226,22 +262,38 @@ def main() -> int:
            color="#d0d0d0", va="center")
 
     a = axes[1, 2]
-    board_map(a, c17["built"][frame17], "7. case17, case10's mask imposed: RECONSTRUCTED\n"
-              "the same 39.5% hidden plus one explicit rim pixel. The SoC has\n"
-              "a broad plateau generated by one smooth plate-equation solve", vmax=hi17)
+    board_map(
+        a,
+        c17["built"][frame17],
+        "7. Same-session shape diagnostic: RECONSTRUCTED\n"
+        "%.1f%% hidden plus one explicit rim pixel. The SoC has\n"
+        "a broad plateau generated by one smooth plate-equation solve"
+        % (100.0 * c17["hidden_fraction"]),
+        vmax=hi17,
+    )
     outline(a, np.where(rebuilt17 ^ binary_dilation(rebuilt17, CROSS), 1.0, 0.0), levels=[0.5],
             colors="cyan", linewidths=0.8)
 
     a = axes[1, 3]
     a.axis("off")
     check = c17["check"]
-    a.text(0.0, 1.0, "8. Scored against case17's truth\n", fontsize=13, weight="bold",
+    a.text(0.0, 1.0, "8. Calibration and shape diagnostics\n", fontsize=13, weight="bold",
            va="top", transform=a.transAxes)
     oracle, flat, centred = c17["oracle"], c17["flat_check"], c17["centred_check"]
     blocks = c17["per_block"]
     soc = max(blocks, key=lambda i: blocks[i]["area_mm2"] if blocks[i]["shape"] != "uniform" else -1)
     worst = max(abs(blocks[i]["broad"] - blocks[i]["centred"]) for i in blocks if i != soc)
+    calibrated = calibration["result"]
     a.text(0.0, 0.94, (
+        "case10 steady SoC surface peak:\n"
+        "    paired anchor                 %.2f C\n"
+        "    same-mask result, no anchor  %.2f C\n"
+        "    case17-adjusted expectation  %.2f C\n"
+        "    difference from expectation %+.2f K\n"
+        "This is surface temperature; the die log is hotter.\n\n"
+        "case17 is a calibration input, not a held-out test.\n"
+        "Within that session, hiding and rebuilding its measured\n"
+        "pixels still diagnoses the spatial fill:\n\n"
         "Filling the blocks from their edges only, the old way:\n"
         "    mean %.2f K, bias %+.2f K  <- cold in every frame\n\n"
         "Putting the measured heat source underneath:\n"
@@ -253,30 +305,33 @@ def main() -> int:
         "    SoC block, centre-weighted        %.2f K\n"
         "    SoC block, broad-source plate     %.2f K\n"
         "    worst change on any other block   %+.2f K\n"
-        "The exterior ring estimates the block's mean level. The\n"
-        "unobserved bell shape made the centre hot and the broad\n"
-        "area around it cold. The new fill preserves that mean,\n"
-        "is generated by a broad source and the plate equation.\n\n"
+        "For ordinary blocks the exterior ring estimates level.\n"
+        "For the SoC, the paired surface anchor replaces that\n"
+        "underdetermined level; the plate equation supplies shape.\n\n"
         "Where the remaining %.2f K sits:\n"
         "    block at the wrong level   %.2f K\n"
         "    wrong pattern inside it    %.2f K\n"
         "Fitting each source to case17's HIDDEN truth instead of to\n"
         "the ring -- the best one number per block can do -- leaves\n"
         "level %.2f K and pattern %.2f K.\n\n"
-        "The saved per-pixel uncertainty is a model range, not a\n"
-        "confidence interval. It combines held-out-ring error with\n"
-        "the disagreement between central- and broad-source plate solutions."
-    ) % (c17["edge_error"], c17["edge_bias"],
+        "The saved range combines held-out-ring error with the\n"
+        "declared cross-session anchor uncertainty; it is not a\n"
+        "statistical confidence interval."
+    ) % (calibrated["anchored_soc_steady_peak_mean_c"],
+         calibrated["unanchored_soc_steady_peak_mean_c"],
+         calibrated["case17_adjusted_expected_peak_c"],
+         calibrated["steady_peak_error_against_adjusted_reference_k"],
+         c17["edge_error"], c17["edge_bias"],
          flat.mean_absolute_k, flat.bias_k, centred.mean_absolute_k, centred.bias_k,
          check.mean_absolute_k, check.bias_k,
          blocks[soc]["uniform"], blocks[soc]["centred"], blocks[soc]["broad"], worst,
          check.mean_absolute_k, check.level_error_k, check.shape_error_k,
          oracle.level_error_k, oracle.shape_error_k),
-        fontsize=8.8, va="top", family="monospace", transform=a.transAxes)
+        fontsize=7.65, va="top", family="monospace", transform=a.transAxes)
 
     fig.suptitle(
-        "case10 Raspberry Pi 4B, full load -- every one of the 240 powered frames rebuilt "
-        "from its heat sources, and checked on a board where the answer is known",
+        "case10 Raspberry Pi 4B, full load -- 240 powered frames calibrated with the "
+        "case17 painted session and both SoC die logs",
         fontsize=14, y=0.985)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     fig.savefig(OUT / "phase2_reconstruction.png", dpi=110)
