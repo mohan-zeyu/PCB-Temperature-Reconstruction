@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Sequence
 
 import numpy as np
 
@@ -38,8 +38,11 @@ from tdp.web.sessions import (
     UploadError,
     detect_unknown_mask,
     detect_window,
+    fit_window_to_frame,
+    grid_for_board,
     load_uploads,
     rectify_session,
+    reference_frame_index,
     register_window,
     state_pairs,
 )
@@ -111,6 +114,47 @@ def _cleanup(directory: Path) -> None:
         shutil.rmtree(directory, ignore_errors=True)
 
 
+def _manual_window(
+    window: dict,
+    frames: Sequence,
+    board_size_mm: tuple[float, float] | None,
+) -> dict:
+    """Turn an explicit window into the same record the detector produces.
+
+    An automatic edge fit can stop at a thermal discontinuity inside the board.
+    On the VisionFive 2 the right-hand connector bank is low-emissivity, so the
+    bare session measured 107 px wide where the painted session measured 149.
+    The caller may then pass ``center_rc`` / ``size_hw`` / ``angle_deg`` from a
+    frame where the outline is visible.  The painted session is still registered
+    to this window, so the two sessions are paired on the same physical area.
+    """
+    try:
+        center = [float(window["center_rc"][0]), float(window["center_rc"][1])]
+        size = [float(window["size_hw"][0]), float(window["size_hw"][1])]
+        angle = float(window.get("angle_deg", 0.0))
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise UploadError("窗口格式应为 center_rc、size_hw、angle_deg") from exc
+    if not all(np.isfinite(center + size + [angle])):
+        raise UploadError("窗口数值必须是有限数")
+    if min(size) < 8.0:
+        raise UploadError(f"窗口尺寸过小：{size[0]:.1f} x {size[1]:.1f} px")
+    index = int(reference_frame_index(frames))
+    center, size = fit_window_to_frame(center, size, angle, frames[index].shape_hw)
+    rows, cols = grid_for_board(board_size_mm, (size[0], size[1]))
+    return {
+        "center_rc": [float(center[0]), float(center[1])],
+        "size_hw": [float(size[0]), float(size[1])],
+        "angle_deg": float(angle),
+        "measured_size_hw": [float(size[0]), float(size[1])],
+        "edge_source": "manual",
+        "aspect_residual": None,
+        "aspect_forced": board_size_mm is not None,
+        "grid_hw": [int(rows), int(cols)],
+        "reference_index": index,
+        "source": "manual",
+    }
+
+
 def train_board(
     *,
     name: str,
@@ -120,6 +164,7 @@ def train_board(
     epochs: int,
     report: Callable[..., None],
     device: str = "auto",
+    window: dict | None = None,
 ) -> Board:
     """Preprocess, pair, train, and register one uploaded board."""
     name = name.strip()
@@ -157,8 +202,12 @@ def train_board(
     )
 
     # ---- window ---------------------------------------------------------
-    progress("window", "在裸板参考帧上定位板体", 0.0)
-    bare_window = detect_window(bare_frames, board_size_mm=board_size_mm)
+    if window is not None:
+        progress("window", "使用给定的板体窗口", 0.0)
+        bare_window = _manual_window(window, bare_frames, board_size_mm)
+    else:
+        progress("window", "在裸板参考帧上定位板体", 0.0)
+        bare_window = detect_window(bare_frames, board_size_mm=board_size_mm)
     grid_hw = (int(bare_window["grid_hw"][0]), int(bare_window["grid_hw"][1]))
     progress("window", "在黑化板参考帧上定位板体", 0.6)
     painted_window = detect_window(painted_frames, board_size_mm=board_size_mm)

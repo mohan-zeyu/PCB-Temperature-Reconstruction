@@ -565,6 +565,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             epochs = int(form.text("epochs", "80") or 80)
             board_size = self._board_size(form)
+            window_raw = form.text("window")
+            window = json.loads(window_raw) if window_raw else None
         except (ValueError, KeyError) as exc:
             self._error(str(exc))
             return
@@ -578,6 +580,7 @@ class Handler(BaseHTTPRequestHandler):
                 epochs=epochs,
                 report=report,
                 device=self.device,
+                window=window,
             )
 
         job = self.jobs.submit(name, task)

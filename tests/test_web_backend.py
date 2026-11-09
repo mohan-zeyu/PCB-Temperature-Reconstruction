@@ -27,7 +27,9 @@ from tdp.web.server import (
     parse_multipart,
 )
 from tdp.web.sessions import (
+    UploadError,
     build_session,
+    load_uploads,
     powered_prefix,
     register_window,
     state_pairs,
@@ -95,6 +97,29 @@ def test_session_locates_and_rectifies_an_arbitrary_board():
     free, _, _ = build_session(bare, board_size_mm=None)
     assert free.window["aspect_residual"] is None
     assert free.grid_hw[0] > 32 and free.grid_hw[1] > 32
+
+
+def test_manual_window_override_replaces_the_edge_fit():
+    """A board whose true edge has no thermal step can supply the rectangle."""
+    from tdp.web.training import _manual_window
+
+    bare, _ = _synthetic_sessions(4)
+    frames, failures = load_uploads(bare)
+    assert not failures
+    window = _manual_window(
+        {"center_rc": [100.0, 80.0], "size_hw": [120.0, 90.0], "angle_deg": 0.0},
+        frames,
+        (85.0, 56.0),
+    )
+    assert window["source"] == "manual"
+    assert window["grid_hw"] == [157, 103]
+    assert window["center_rc"] == [100.0, 80.0]
+    assert window["size_hw"] == [120.0, 90.0]
+
+    with pytest.raises(UploadError):
+        _manual_window({"center_rc": [100.0, 80.0], "size_hw": [4.0, 4.0]}, frames, None)
+    with pytest.raises(UploadError):
+        _manual_window({"center_rc": [1.0], "size_hw": [120.0, 90.0]}, frames, None)
 
 
 def test_pairing_uses_the_low_emissivity_mask_and_the_state_order():
