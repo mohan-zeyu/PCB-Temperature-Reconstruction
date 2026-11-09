@@ -1,7 +1,9 @@
 """Export a small, truthful presentation sample from existing model archives.
 
 Run from the repository root with ``.venv/bin/python web/generate_demo_assets.py``.
-The browser demo replays these saved predictions; it does not run model inference.
+These assets are the **read-only fallback** used when no backend is running.  With
+``web/server.py`` the browser calls the real model instead; the fallback never
+pretends to train or to infer a new frame.
 """
 
 from __future__ import annotations

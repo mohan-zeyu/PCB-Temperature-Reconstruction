@@ -20,6 +20,7 @@ dev = ["pytest>=8.0"]
 
 [project.scripts]
 tdp-dynamic-inverse = "tdp.dynamic_inverse.cli:main"
+tdp-web = "tdp.web.server:main"
 
 [build-system]
 requires = ["setuptools>=68"]

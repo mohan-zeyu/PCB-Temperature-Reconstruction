@@ -20,10 +20,12 @@ tdp/io/                  HIKMICRO CSV 解析（自带统计量自检）
 tdp/data/crop.py         板窗口定位、旋转/透视矫正、配准
 tdp/data/emissivity.py   低发射率区域检测与传导修复
 tdp/thermal/             热源检测、逐帧重建、固定物理模式与闭式前向求解
-tdp/dynamic_inverse/     动态热反演（本次新增）
+tdp/dynamic_inverse/     动态热反演
+tdp/web/                 网页后端：任意板体上传、配对、训练、推理
+web/                     Thermal Studio 前端、内置样例与启动脚本
 configs/                 measurements_v3.yaml（测量元数据）
                          dynamic_inverse.yaml（分析参数）
-tests/                   物理不变量、合成数据恢复、数据契约
+tests/                   物理不变量、合成数据恢复、数据契约、网页后端
 docs/                    中文说明
 实验数据（黑胶带版）/     原始采集数据
 ```
@@ -61,10 +63,30 @@ python scripts/run_forecast.py --start-frame 0
 
 # 固定 1280x720 视频、误差曲线与冻结测试集消融图
 python scripts/figure_forecast.py
+
+# 网页工作台：任意板子上传训练，任意同板 CSV 真实推理
+python web/server.py --port 8000
+# 打开 http://127.0.0.1:8000/web/
 ```
 
 产物写入 `outputs/dynamic_inverse/<sequence>/latest/`，
 包含 `report.md`、`metrics.json`、`run_metadata.json` 与全部图件。
+
+## 网页工作台：任意板子、任意原始数据
+
+`web/server.py` 把原来的静态演示变成真实服务：
+
+* 「训练新板」上传同一块板的裸板与高发射率（黑化）CSV，服务端会定位板体、
+  统一网格、按结构把两组画面配准、检测不可信区域、按热状态配对，再训练该板
+  自己的残差校正模型；
+* 「温度重建」上传任意一帧同板 CSV，服务端用该板型的窗口、掩膜和权重做真实
+  推理，不再要求文件哈希与内置样例一致；
+* 每个新板型保存在 `outputs/web_boards/<board-id>/`，可删除、可切换；
+* 没有后端时页面进入只读演示模式，只显示内置预测，不会假装训练。
+
+**边界**：新增板型只训练一条会话，上报的是训练集误差，不是留出泛化；高发射率
+记录是标签而不是绝对真值；未知板体尺寸时长度只有像素单位。详细说明见
+[`web/README.md`](web/README.md)。
 
 最终的热源驱动重建写入 `outputs/thermal/case10/`。默认流程把 case10 与同负载、
 哑光黑漆的 case17 按绝对时间和负载区间对应，并用两次实验的 SoC 日志把结温修正为
