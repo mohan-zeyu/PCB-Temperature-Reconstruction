@@ -1,20 +1,127 @@
-# Thermal Studio frontend
+# Thermal Studio
 
-Start from the repository root:
+浏览器端现在有一个真实后端：任意板子可以上传数据训练，任意同板 HIKMICRO CSV
+或原始热像 JPEG 都可以跑模型，不再要求文件哈希与内置样例一致。
+
+## 启动
+
+在仓库根目录：
 
 ```bash
-python3 -m http.server 8000
+.venv/bin/python web/server.py --port 8000
 ```
 
-Open `http://localhost:8000/web/`.
+打开 `http://127.0.0.1:8000/web/`。只绑定 `127.0.0.1`；这个服务没有鉴权，不要
+暴露到公网。
 
-The built-in Raspberry Pi 4B board uses saved case10 predictions. Five corresponding source HIKMICRO CSV frames are bundled in `samples/raspberry-pi-4b/`. The add-board flow replays the Orange Pi 5 Pro experiment, including 480 paired frames and the saved 300-epoch training history. Five matching Orange Pi source CSVs are bundled in `samples/orange-pi-5-pro/`.
+内置板型需要仓库里的已训练权重：
 
-The frontend reads and validates a selected 256 × 192 camera CSV. Only bundled frames whose file contents match a saved source frame can display a reconstruction; other valid CSVs can show the camera input, but have no model result in this frontend. The temperature maps and downloads are absolute °C using each frame's measured ambient temperature. Image and CSV corner gaps are filled from nearby valid board pixels. The displayed and exported maps are in portrait orientation.
+```text
+outputs/thermal/unet_case10/train_both/model_best.pt
+outputs/thermal/unet_opi5pro/train_both/model_best.pt
+outputs/thermal/unet_case10/paired_masks.npz
+outputs/thermal/unet_opi5pro/pairs_both.npz
+```
 
-After training playback, the named board is saved in browser local storage and appears in the picker and library. Use **板型库 → 恢复初始状态** to clear added boards, uploads, and training progress, then return to the starting Raspberry Pi 4B page. Training is presentation playback, not a new model fit; the saved Orange Pi model supplies its metrics and inference examples. The interface is written to accommodate a live backend later.
+第一次启动会把它们复制到 `outputs/web_boards/<board-id>/`，并生成一张预览图。
+缺少权重时服务仍可启动，只是板型库为空；静态演示仍然可用。
 
-The JSON assets and bundled source CSVs are generated from the repository's saved `.npz` predictions, source recordings, and training metric files. To rebuild them:
+## 新板型怎么训练
+
+「训练新板」需要两组同一块板的数据，CSV 或原始热像 JPEG 均可：
+
+1. **裸板**：低发射率金属读低的原始记录；
+2. **黑化板 / 高发射率参考**：同一块板喷黑或贴黑胶带后的记录。
+
+每组至少 4 帧，通常上传整段通电序列。可选的「板体尺寸 / mm」用于确定物理比例；
+不填时保留相机像素比例，长度只按 px 报告。
+
+服务端按以下顺序处理：
+
+1. 解析任意分辨率的热像 CSV，或从 HIKMICRO JPEG 的 HDRI 块解码 16-bit 温度矩阵
+   （不强制 256 × 192；JPEG 与 CSV 走同一个解析入口）；
+2. 在每组的热参考帧上定位板体，决定一个统一网格；
+3. 把黑化板窗口按**结构相关**对齐到裸板窗口。高发射率层可能比 PCB 大 20 %，
+   直接检测会框到胶带/漆面而不是板体；这一步是本项目在 Orange Pi 上手工修正过的
+   同一件事，现在自动完成；
+4. 在裸板上检测低发射率区域；
+5. 按可信区温度水平配对两段序列，不依赖 CPU / SoC 日志；
+6. 训练残差 U-Net：输入裸板温度场 + 板体掩膜 + 不可信区掩膜，输出温度修正；
+7. 保存模型、窗口、掩膜、结构签名、训练曲线和预览。
+
+板型保存在：
+
+```text
+outputs/web_boards/<board-id>/
+    board.json
+    model.pt
+    arrays.npz
+    preview.npz
+    train_metrics.json
+```
+
+## 任意 CSV / JPEG 怎么推理
+
+选择板型，上传任意一帧同板裸板 CSV 或 JPEG，点「开始重建」。服务端会：
+
+1. 解析 CSV，或从 JPEG 解码温度矩阵；
+2. 用该板型的窗口（或按结构匹配重新定位）把帧配准到板型网格；
+3. 计算结构匹配度；低于 0.30 会在结果上方给出警告；
+4. 运行该板型自己的模型；
+5. 返回裸板读数、重建温度、不可信区掩膜、匹配度和可下载的 CSV / PNG。
+
+这是模型推理，不是查表。上传一帧没有出现在训练数据里的同板帧，也会得到该帧自己
+的重建结果。
+
+## API
+
+```text
+GET    /api/health
+GET    /api/boards
+GET    /api/boards/<id>
+GET    /api/boards/<id>/preview
+DELETE /api/boards/<id>             仅限非内置板型
+POST   /api/boards                  multipart: name, bare[], painted[], epochs, board_size_mm
+GET    /api/jobs/<id>
+POST   /api/infer                   multipart: board_id, file
+```
+
+训练是后台任务；浏览器轮询 `/api/jobs/<id>` 拿真实进度、日志和损失曲线。
+
+## 实测参考
+
+在仓库真实的 Orange Pi 数据上（720 帧裸板 + 387 帧黑胶带板），本流程自动切出
+240 帧裸板通电段和 85 帧黑化板通电段，可信区配对残差 1.44 K；训练 60 轮后
+训练集板体 MAE 0.72 K、不可信区 MAE 0.88 K，不可信区偏差从裸板的 +5.78 K
+降到 -0.02 K。这些是训练集数字，不是留出泛化。
+
+## 板体图像的朝向和黑角
+
+热图按源数据方向显示：**第 0 行在图像顶部**。旧版网页画布同时翻转了行和列，
+把板体底部的 USB / 网口边缘转到了图像顶部，看起来像板子上下颠倒、上面两个角
+缺失；画布还在绘制已经补齐的显示场时检查了板体掩膜，把补齐值重新涂黑。现在
+画布不再翻转，显示场按最近的有效板体像素补齐，像素读数仍然遵守有效掩膜。
+
+矩形裁切会在板体不是矩形的地方包含背景：case10 底部是突出的 USB / 网口，
+Orange Pi 右上角是切角。显示时只把“贴着图像边界、温度低于 3 K、且不超过
+板体 10%”的连通近环境区域当作背景，用最近板体值补齐。这个 3 K 规则只服务
+显示，不参与训练、指标或像素读数；背景仍然不是测量值。CSV 导出的是补齐后
+的显示场，逐像素读数不会报告这些补出的点。
+
+## 必须说明的边界
+
+- **上报的是训练集误差**，不是留出泛化。新增板型没有第三条独立会话，服务端不会
+  把训练误差冒充成验证误差。需要独立检验时，请再上传一段同板记录做留出评估。
+- 高发射率记录是**标签**，不是绝对真值。它仍然依赖相机 0.95 发射率假设。
+- 板体窗口、不可信区掩膜都是估计。长度单位在未知板体尺寸时只有 px。
+- 同一板型的输入应保持相机视角和板体朝向一致；结构匹配可以吸收小范围平移和缩放，
+  不能处理 90° 旋转或完全不同的机位。
+- CPU 训练明显慢于 Apple MPS / CUDA；服务启动时会自动选最快的可用设备。
+
+## 静态演示
+
+没有后端时（例如只用 `python -m http.server`），页面进入只读演示模式：显示内置
+的 case10 / Orange Pi 预测，但不会假装训练或推理。演示资产由以下命令重建：
 
 ```bash
 .venv/bin/python web/generate_demo_assets.py

@@ -98,7 +98,7 @@ def estimate_board_window(
     frame: np.ndarray,
     ambient_c: float | None = None,
     angle_deg: float | None = None,
-    aspect: float = 85.0 / 56.0,
+    aspect: float | None = 85.0 / 56.0,
     search_deg: float = 20.0,
     edges_derotated: dict[str, float] | None = None,
 ) -> dict[str, Any]:
@@ -107,12 +107,17 @@ def estimate_board_window(
     The board is derotated and its four edges are taken either from
     ``edges_derotated`` -- row/column indices agreed once for a session -- or,
     failing that, from the row and column profiles of the excess-temperature
-    field.  Either way the resulting extent is then *forced* onto the known
-    85:56 outline: the two measured extents are replaced by the pair with the
-    same area and the correct aspect ratio.  ``aspect_residual`` reports how
-    far the raw extent was from that ratio, which is the honest measure of how
-    well the window was found -- a few percent is edge-finding noise or ports
-    protruding past the PCB, a large value means a cable or a halo was caught.
+    field.  When ``aspect`` is given the measured extent is *forced* onto that
+    outline: the two extents are replaced by the pair with the same area and
+    the correct aspect ratio.  ``aspect_residual`` reports how far the raw
+    extent was from that ratio, which is the honest measure of how well the
+    window was found -- a few percent is edge-finding noise or ports protruding
+    past the PCB, a large value means a cable or a halo was caught.
+
+    ``aspect=None`` keeps the measured aspect.  That is the only workable mode
+    for a board whose physical outline is unknown: inventing 85:56 there would
+    silently resample the board along one axis.  ``aspect_forced`` records
+    which mode ran.
     """
     ambient = estimate_ambient(frame) if ambient_c is None else float(ambient_c)
     angle = estimate_board_angle(frame, ambient, search_deg) if angle_deg is None else float(angle_deg)
@@ -134,10 +139,18 @@ def estimate_board_window(
     if measured_h <= 1 or measured_w <= 1:
         raise ValueError("board edges could not be located in the excess-temperature profile")
 
-    area = measured_h * measured_w
-    height = float(np.sqrt(area * aspect))
-    width = float(np.sqrt(area / aspect))
-    aspect_residual = abs((measured_h / measured_w) / aspect - 1.0)
+    if aspect is None:
+        height, width = float(measured_h), float(measured_w)
+        aspect_residual = float("nan")
+        aspect_forced = False
+    else:
+        if aspect <= 0:
+            raise ValueError(f"aspect must be positive, got {aspect}")
+        area = measured_h * measured_w
+        height = float(np.sqrt(area * aspect))
+        width = float(np.sqrt(area / aspect))
+        aspect_residual = abs((measured_h / measured_w) / aspect - 1.0)
+        aspect_forced = True
 
     # Centre found in the derotated frame; rotate it back about the frame centre.
     centre_rot = np.array([(row0 + row1) / 2.0, (col0 + col1) / 2.0])
@@ -154,6 +167,7 @@ def estimate_board_window(
         "edges_derotated": {"top": row0, "bottom": row1, "left": col0, "right": col1},
         "edge_source": edge_source,
         "aspect_residual": float(aspect_residual),
+        "aspect_forced": bool(aspect_forced),
         "ambient_c": float(ambient),
     }
 

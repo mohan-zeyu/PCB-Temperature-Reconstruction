@@ -19,7 +19,7 @@
         <button class="nav-item" data-view="library" type="button"><span class="nav-icon">▤</span><span class="nav-text">板型库</span><span class="nav-arrow">↗</span></button>
       </nav>
       <div class="side-bottom">
-        <div class="status-line"><span class="pulse"></span> 系统就绪</div>
+        <div class="status-line"><span class="pulse"></span><span id="backend-state">正在连接后端…</span></div>
         <p>红外温度场重建平台</p>
         <span class="side-version">PCB · THERMAL STUDIO</span>
       </div>
@@ -28,13 +28,14 @@
     <div class="main-shell">
       <header class="topbar">
         <div class="breadcrumb">工作台 <span>/</span> <strong id="breadcrumb-current">温度重建</strong></div>
-        <div class="topbar-right"><span class="live-dot"></span> 系统运行中 <span class="topbar-divider"></span> <span id="topbar-count">1 个板型可用</span></div>
+        <div class="topbar-right"><span class="live-dot"></span><span id="topbar-state">连接中</span><span class="topbar-divider"></span><span id="topbar-count">— 个板型</span></div>
       </header>
+      <div id="mode-banner" class="mode-banner hidden"></div>
 
       <main>
         <section id="inference-view" class="view active" aria-labelledby="inference-title">
           <div class="page-heading">
-            <div><p class="eyebrow">01 / 温度重建</p><h1 id="inference-title">还原真实<br><em>温度分布</em></h1><p class="intro">选择板型并导入裸板红外数据，查看重建结果。</p></div>
+            <div><p class="eyebrow">01 / 温度重建</p><h1 id="inference-title">还原真实<br><em>温度分布</em></h1><p class="intro">选择已训练板型，导入任意一帧裸板红外 CSV，由该板型自己的模型完成重建。</p></div>
             <div class="heading-aside"><div class="heading-aside-icon">↗</div><p>裸板测量<br>温度重建</p></div>
           </div>
           <div class="inference-grid">
@@ -42,14 +43,16 @@
               <div class="card-topline"><span>输入数据</span><span>01 / 02</span></div>
               <label class="field-label" for="board-select">已训练板型</label>
               <div class="select-wrap"><select id="board-select"></select><span>⌄</span></div>
-              <div id="board-details" class="board-details"></div>
+              <div id="board-details" class="board-details">正在读取板型…</div>
               <div class="divider"></div>
               <div class="field-title-row"><span class="field-label">裸板红外数据</span><span class="field-helper">CSV</span></div>
               <div id="upload-input" class="input-pane">
-                <label class="drop-zone" id="inference-drop"><input id="inference-file" type="file" accept=".csv,text/csv"><span class="drop-icon">↑</span><strong>选择 CSV 文件</strong><span>或拖放至此</span></label>
-                <p id="inference-file-name" class="upload-caption">支持单帧温度数据</p>
+                <label class="drop-zone" id="inference-drop"><input id="inference-file" type="file" accept=".csv,.jpeg,.jpg,text/csv,image/jpeg"><span class="drop-icon">↑</span><strong>选择 CSV / JPEG 文件</strong><span>或拖放至此</span></label>
+                <p id="inference-file-name" class="upload-caption">支持 HIKMICRO 单帧温度 CSV 或 JPEG</p>
               </div>
-              <button id="run-inference" class="primary-button" type="button">开始重建 <span>↗</span></button>
+              <button id="run-inference" class="primary-button" type="button" disabled>开始重建 <span>↗</span></button>
+              <p id="inference-error" class="field-error hidden" role="alert"></p>
+              <p class="model-note">模型由同一块板的高发射率（黑化）记录训练；输出是估计值，不是直接测量。热图外侧的空隙由最近的有效板体像素补齐，仅用于显示；像素读数仍按有效掩膜判断。</p>
             </div>
 
             <div class="result-panel card">
@@ -59,41 +62,49 @@
                 <div class="heatmap-card"><div class="heatmap-title"><span>02</span> 重建温度场</div><div class="canvas-frame"><canvas id="pred-canvas" width="103" height="157" aria-label="重建温度图"></canvas><div class="canvas-corner top-left"></div><div class="canvas-corner bottom-right"></div><div id="pred-overlay" class="pred-overlay"><span>↗</span><b>等待重建</b></div></div><div class="heatmap-caption"><span>重建结果</span><b id="pred-range">—</b></div></div>
               </div>
               <div class="temperature-scale"><span>低温</span><div class="scale-bar"></div><span>高温</span></div>
+              <div id="frame-warnings" class="frame-warnings hidden"></div>
+              <p id="signature-note" class="signature-note hidden"></p>
               <div class="result-footer"><div><span class="result-foot-label">像素温度</span><strong id="pixel-readout">将鼠标移至图像查看</strong></div><div class="download-actions"><button id="download-csv" class="secondary-button" type="button" disabled>↓ 温度 CSV</button><button id="download-png" class="secondary-button" type="button" disabled>↓ 热图 PNG</button></div></div>
             </div>
           </div>
         </section>
 
         <section id="training-view" class="view" aria-labelledby="training-title">
-          <div class="page-heading training-heading"><div><p class="eyebrow">02 / 新板型</p><h1 id="training-title">训练新板型</h1><p class="intro">导入裸板与黑化板温度数据，查看处理和训练进度。</p></div><div class="heading-aside"><div class="heading-aside-icon">+</div><p>建立板型<br>温度校正模型</p></div></div>
+          <div class="page-heading training-heading"><div><p class="eyebrow">02 / 新板型</p><h1 id="training-title">训练新板型</h1><p class="intro">导入同一块板的裸板与黑化板记录；服务端会定位并配准板体、按热状态配对，再训练只属于这块板的校正模型。</p></div><div class="heading-aside"><div class="heading-aside-icon">+</div><p>建立板型<br>校正模型</p></div></div>
           <div class="training-layout">
             <div class="training-setup card">
               <div class="card-topline"><span>创建训练任务</span><span>01 / 02</span></div>
-              <label class="field-label" for="board-name">板型名称</label><input id="board-name" class="text-input" type="text" maxlength="44" placeholder="例如：Orange Pi 5 Pro" value="Orange Pi 5 Pro">
+              <label class="field-label" for="board-name">板型名称</label><input id="board-name" class="text-input" type="text" maxlength="44" placeholder="例如：我的板子" value="">
+              <div class="form-row">
+                <div><label class="field-label" for="board-size">板体尺寸 / mm（可选）</label><input id="board-size" class="text-input" type="text" placeholder="长 x 短，例如 85x56"></div>
+                <div><label class="field-label" for="epochs">训练轮次</label><select id="epochs" class="text-input"><option value="40">40 轮</option><option value="80" selected>80 轮</option><option value="160">160 轮</option></select></div>
+              </div>
               <div class="divider"></div>
-              <div class="field-title-row"><span class="field-label">训练数据</span><span class="field-helper">HIKMICRO CSV</span></div>
-              <label class="upload-box" id="bare-box"><input id="bare-files" type="file" accept=".csv,text/csv" multiple><span class="upload-glyph">↥</span><span><strong>裸板红外数据</strong><small id="bare-files-label">选择 CSV 文件</small></span><span class="upload-box-arrow">↗</span></label>
-              <label class="upload-box" id="painted-box"><input id="painted-files" type="file" accept=".csv,text/csv" multiple><span class="upload-glyph">↥</span><span><strong>黑化板红外数据</strong><small id="painted-files-label">选择 CSV 文件</small></span><span class="upload-box-arrow">↗</span></label>
-              <button id="use-archive" class="archive-button" type="button"><span>◫</span> 载入现有数据 <span>↗</span></button>
+              <div class="field-title-row"><span class="field-label">训练数据</span><span class="field-helper">HIKMICRO CSV / JPEG，可多选</span></div>
+              <label class="upload-box" id="bare-box"><input id="bare-files" type="file" accept=".csv,.jpeg,.jpg,text/csv,image/jpeg" multiple><span class="upload-glyph">↥</span><span><strong>裸板红外数据</strong><small id="bare-files-label">选择 CSV / JPEG 文件</small></span><span class="upload-box-arrow">↗</span></label>
+              <label class="upload-box" id="painted-box"><input id="painted-files" type="file" accept=".csv,.jpeg,.jpg,text/csv,image/jpeg" multiple><span class="upload-glyph">↥</span><span><strong>黑化板 / 高发射率数据</strong><small id="painted-files-label">选择 CSV / JPEG 文件</small></span><span class="upload-box-arrow">↗</span></label>
+              <button id="use-archive" class="archive-button hidden" type="button">载入现有数据</button>
               <div id="training-validation" class="validation-line">请选择两组温度数据</div>
+              <p id="training-error" class="field-error hidden" role="alert"></p>
               <button id="start-training" class="primary-button" type="button" disabled>开始训练 <span>↗</span></button>
             </div>
             <div class="pipeline card">
               <div class="pipeline-head"><div><div class="card-topline"><span>处理进度</span><span id="pipeline-clock">00:00</span></div><h2 id="pipeline-title">等待导入数据</h2><p id="pipeline-subtitle">训练步骤与结果将在下方显示。</p></div><div id="pipeline-ring" class="progress-ring"><span>0%</span></div></div>
               <div class="pipeline-stages" id="pipeline-stages"></div>
-              <div class="pipeline-log-wrap"><div class="log-heading"><span>处理记录</span><span>按时间排序</span></div><div id="pipeline-log" class="pipeline-log" aria-live="polite"><p class="log-empty">尚无处理记录</p></div></div>
-              <div id="training-visual" class="training-visual hidden"><div class="visual-item"><canvas id="pair-bare" aria-label="裸板训练温度图"></canvas><span>裸板</span></div><div class="visual-connector">→<small>匹配</small></div><div class="visual-item"><canvas id="pair-painted" aria-label="黑化板训练温度图"></canvas><span>黑化板</span></div></div>
-              <div class="training-chart hidden" id="training-chart"><div class="chart-heading"><div><span class="eyebrow small">训练曲线</span><h3>温度误差</h3></div><span id="chart-value">— K</span></div><svg id="loss-chart" viewBox="0 0 520 138" preserveAspectRatio="none" role="img" aria-label="训练误差曲线"></svg><div class="chart-axis"><span>0 轮</span><span>150</span><span>300 轮</span></div></div>
+              <div class="pipeline-log-wrap"><div class="log-heading"><span>处理记录</span><span>服务端实时进度</span></div><div id="pipeline-log" class="pipeline-log" aria-live="polite"><p class="log-empty">尚无处理记录</p></div></div>
+              <div id="training-visual" class="training-visual hidden"><div class="visual-item"><canvas id="pair-bare" aria-label="裸板训练温度图"></canvas><span>裸板</span></div><div class="visual-connector">→<small>配对</small></div><div class="visual-item"><canvas id="pair-painted" aria-label="黑化板训练温度图"></canvas><span>黑化板</span></div></div>
+              <div class="training-chart hidden" id="training-chart"><div class="chart-heading"><div><span class="eyebrow small">训练曲线</span><h3>训练集板体误差</h3></div><span id="chart-value">— K</span></div><svg id="loss-chart" viewBox="0 0 520 138" preserveAspectRatio="none" role="img" aria-label="训练误差曲线"></svg><div class="chart-axis"><span id="chart-min">0 轮</span><span id="chart-mid">—</span><span id="chart-max">— 轮</span></div></div>
               <div id="training-complete" class="training-complete hidden"><div><span class="complete-check">✓</span><div><strong>板型已就绪</strong><p id="complete-copy">可在板型库中使用。</p></div></div><button id="open-trained-board" type="button">查看板型 ↗</button></div>
             </div>
           </div>
         </section>
 
         <section id="library-view" class="view" aria-labelledby="library-title">
-          <div class="page-heading"><div><p class="eyebrow">03 / 板型库</p><h1 id="library-title">已训练板型</h1><p class="intro">选择板型，进行温度重建。</p></div><div class="heading-aside"><div class="heading-aside-icon">▤</div><p>板型模型<br>统一管理</p></div></div>
-          <div class="library-toolbar"><span id="library-count">1 个板型</span><button id="library-add" class="primary-button compact" type="button">+ 训练新板型</button></div>
+          <div class="page-heading"><div><p class="eyebrow">03 / 板型库</p><h1 id="library-title">已训练板型</h1><p class="intro">每个板型都有自己的窗口、不可信区域掩膜和校正模型。</p></div><div class="heading-aside"><div class="heading-aside-icon">▤</div><p>板型模型<br>统一管理</p></div></div>
+          <div class="library-toolbar"><span id="library-count">— 个板型</span><button id="library-add" class="primary-button compact" type="button">+ 训练新板型</button></div>
           <div id="library-grid" class="library-grid"></div>
-          <div class="library-note"><span>ⓘ</span><p>选择板型后可导入裸板数据进行重建。</p><button id="reset-demo" type="button">恢复初始状态</button></div>
+          <p id="library-empty" class="library-empty hidden">还没有已训练的板型。请先导入同一块板的裸板与黑化板记录。</p>
+          <div class="library-note"><span>ⓘ</span><p>内置板型来自本仓库的已训练模型；新增板型保存在本机 <code>outputs/web_boards/</code>。</p><button id="reset-demo" type="button">清除新增板型</button></div>
         </section>
       </main>
     </div>

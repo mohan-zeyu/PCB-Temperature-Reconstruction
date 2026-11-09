@@ -83,24 +83,79 @@ def _parse_metadata(lines: list[str]) -> dict[str, float | str]:
     return meta
 
 
+def parse_hm_csv(
+    data: bytes,
+    name: str,
+    expect_shape: tuple[int, int] | None = (256, 192),
+    stat_tolerance_c: float = 0.2,
+    self_check: bool = True,
+) -> HMFrame:
+    """Parse one HIKMICRO CSV already held in memory.
+
+    The browser backend receives uploads as bytes and has no path yet, so the
+    decoder and the integrity self-check must not depend on the filesystem.
+    ``name`` is still needed: the clock lives in the ``HM<timestamp>`` filename.
+
+    ``expect_shape=None`` reads the matrix shape from the coordinate header
+    instead of asserting 256 x 192.  Uploads from another camera, or a frame
+    exported at another resolution, then still run; the board window and the
+    network grid are independent of the sensor grid.
+    """
+    path = Path(name)
+    text, encoding = _decode(data, path)
+    return parse_hm_text(
+        text,
+        path,
+        encoding=encoding,
+        expect_shape=expect_shape,
+        stat_tolerance_c=stat_tolerance_c,
+        self_check=self_check,
+    )
+
+
 def read_hm_csv(
     path: Path | str,
-    expect_shape: tuple[int, int] = (256, 192),
+    expect_shape: tuple[int, int] | None = (256, 192),
     stat_tolerance_c: float = 0.2,
     self_check: bool = True,
 ) -> HMFrame:
     path = Path(path)
-    text, encoding = _decode(path.read_bytes(), path)
+    return parse_hm_csv(
+        path.read_bytes(),
+        path.name,
+        expect_shape=expect_shape,
+        stat_tolerance_c=stat_tolerance_c,
+        self_check=self_check,
+    )
+
+
+def parse_hm_text(
+    text: str,
+    path: Path,
+    *,
+    encoding: str = "utf-8",
+    expect_shape: tuple[int, int] | None = (256, 192),
+    stat_tolerance_c: float = 0.2,
+    self_check: bool = True,
+) -> HMFrame:
+    """Parse decoded CSV text; shared by the path and bytes entry points."""
     lines = text.splitlines()
 
-    n_cols = expect_shape[1]
+    n_cols = expect_shape[1] if expect_shape is not None else None
     header_idx: int | None = None
     for i, line in enumerate(lines):
         cells = line.split(",")
-        if len(cells) >= n_cols and [c.strip() for c in cells[1:4]] == ["0", "1", "2"]:
+        if n_cols is None:
+            if len(cells) >= 4 and [c.strip() for c in cells[1:4]] == ["0", "1", "2"]:
+                while cells and not cells[-1].strip():
+                    cells.pop()
+                n_cols = len(cells) - 1
+                header_idx = i
+                break
+        elif len(cells) >= n_cols and [c.strip() for c in cells[1:4]] == ["0", "1", "2"]:
             header_idx = i
             break
-    if header_idx is None:
+    if header_idx is None or n_cols is None:
         raise HMParseError(f"{path.name}: coordinate header row not found")
 
     rows: list[np.ndarray] = []
@@ -118,10 +173,16 @@ def read_hm_csv(
             raise HMParseError(f"{path.name}: bad data row after {len(rows)} rows: {exc}") from exc
 
     temps = np.stack(rows) if rows else np.empty((0, n_cols), np.float32)
-    if temps.shape != expect_shape:
-        raise HMParseError(f"{path.name}: matrix shape {temps.shape}, expected {expect_shape}")
-    if row_labels != list(range(expect_shape[0])):
-        raise HMParseError(f"{path.name}: row indices not contiguous 0..{expect_shape[0] - 1}")
+    if expect_shape is not None:
+        if temps.shape != expect_shape:
+            raise HMParseError(f"{path.name}: matrix shape {temps.shape}, expected {expect_shape}")
+        expected_rows = expect_shape[0]
+    else:
+        if temps.shape[0] < 2 or temps.shape[1] < 2:
+            raise HMParseError(f"{path.name}: matrix shape {temps.shape} is not a usable image")
+        expected_rows = int(temps.shape[0])
+    if row_labels != list(range(expected_rows)):
+        raise HMParseError(f"{path.name}: row indices not contiguous 0..{expected_rows - 1}")
 
     meta = _parse_metadata(lines[:header_idx])
 

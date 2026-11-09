@@ -177,6 +177,64 @@ Stage 2 estimates.
 **The three numerical deliverables are done** — 240 reconstructed powered frames, a
 forward one-second forecast from any named frame, and `hotspots.csv`.
 
+## Web studio backend (2026-11-06, implemented)
+
+The browser demo used to be presentation-only: "add board" replayed the saved
+Orange Pi animation, and inference displayed only the five bundled frames whose
+SHA-256 matched a saved prediction. The owner's requirement was the opposite:
+**any board can be added and any raw frame of that board can run a model.**
+
+`tdp/web/` and `web/server.py` now implement that:
+
+* `POST /api/boards` accepts bare and high-emissivity CSV sets, parses any sensor
+  resolution, locates each board, rectifies both sessions onto one grid, detects
+  the low-emissivity footprint, pairs frames by trusted-pixel thermal state,
+  trains the residual correction net, and stores the board under
+  `outputs/web_boards/<board-id>/`.
+* `POST /api/infer` runs that board's operator on any uploaded CSV and returns
+  the measured and reconstructed fields, the fixed masks, a structure-match
+  score, and downloadable arrays.
+* The built-in boards are loaded from the existing case10/case17 and Orange Pi
+  checkpoints on first server start; without those `outputs/` files the server
+  lists no boards and the static frontend stays in read-only demo mode.
+
+Two measured preprocessing points are load-bearing and must not be removed:
+
+1. **The painted/tape session must be registered to the bare board.** On the
+   Orange Pi tape run, independent detection found the 174 mm tape sheet, 23 %
+   larger and 20 px from the 141 mm PCB. The project had corrected that window
+   by hand; the backend now recovers it by maximising gradient-structure
+   correlation against the bare reference (recovered centre 108.5, 100.5 mm px
+   against the recorded 108.5, 101.5). Pairing on the uncorrected window raised
+   the trusted-pixel label noise from 1.5 K to about 5 K.
+2. **Pairing is by trusted-pixel thermal state, not frame index.** The web
+   uploads carry no CPU/SoC logs. The image-based load-drop test cuts a cooling
+   tail when the warming rate falls and keeps falling; a near-settled board can
+   have a negative pre-drop rate, so "rate before > 0" is not a valid test.
+   The cut also rejects a candidate that sits on a recording gap: case13 has a
+   147 s gap whose restart is a *larger* rate step than the true load stop. A
+   candidate must start near the session peak and be followed by at least 0.4 K
+   of sustained cooling; otherwise the whole recording is kept.
+
+On the real Orange Pi pair (720 bare + 387 tape frames) the gap-aware cut keeps
+240 bare and 85 painted frames. The trusted-pixel pairing residual is 1.44 K
+(the saved desktop archive reports 1.9 K for its full-load pairs). After 60
+epochs the training-set board MAE is 0.72 K and the masked-area MAE is 0.88 K;
+the masked bias moves from +5.78 K in the raw pairs to -0.02 K. These are
+training-set numbers, not held-out generalization.
+
+The web model is the painted-truth residual U-Net, not the Stage 2 plate
+reconstruction and not the Stage 3 forecast. Its reported error is a
+**training-set fit error against the high-emissivity label**; a new board has no
+held-out session, so the server never calls that number a validation score. The
+completion state of the case10 Stage 2/3 benchmark is unchanged.
+
+Known limits, stated in the UI and `web/README.md`: the high-emissivity
+recording is still a label based on the 0.95 emissivity assumption; an unknown
+physical board size leaves lengths in pixels; the same camera framing and board
+orientation are assumed (structure matching absorbs small shifts and zooms, not
+a 90-degree rotation); and CPU training is much slower than MPS/CUDA.
+
 ## Future fixed-load-conditioned model — approved, not implemented
 
 Do this only after the multi-load data gate below is satisfied. The completed case10
@@ -491,6 +549,23 @@ Write equations as sentences where possible. Every reported quantity carries its
   the owner spotted and reported as the two runs looking 180° apart. The data was never
   affected; only the overlay. Pass explicit coordinate arrays
   (`ax.contour(grid_x, grid_y, Z)`); a test now fails if `contour` is given an `extent`.
+- **The black top corners of the extracted board image are a display-frame
+  error, not a missing measurement.** On case10's 157x103 canonical grid the
+  top-left and top-right corners are valid in 100/100 pixels; the bottom-left is
+  22/100 and the bottom-right is 0/100. The bottom edge is the USB/Ethernet port
+  side: the ports protrude past the PCB, so the rectangle's bottom corners are
+  background. The old web canvas mapped `x = W-1-col`, `y = H-1-row`, which put
+  that data bottom at the display top; it also checked `board_mask` while drawing
+  the already-filled `*_display` array, so the nearest-valid fill was blacked out.
+  The visible result was an upside-down board with black top corners. Fix: draw
+  `x=col`, `y=row`; draw the display array with `filled=true`; keep the mask for
+  pixel readout; export CSV in the same source order. The Orange Pi board's cut
+  top-right corner is a second case: its rectangular crop contains background
+  and the saved mask is 100% true. A display-only, border-connected near-ambient
+  mask (below 3 K, at most 10% of valid pixels) removes it from the heatmap.
+  Neither fill is a measurement: the pixel readout and the valid mask still
+  exclude it. Do not "fix" a black corner by marking background as board; trace
+  it to the mask and the canvas frame first.
 - **A board-average bias can hide per-block errors that cancel.** Choose the per-block
   metric first, and never claim an unobserved lid level from a small aggregate error.
 - **Never split frames randomly.** Adjacent frames on a ~6 s cadence are near
@@ -530,8 +605,9 @@ correct it.
 ## Commands
 
 ```bash
-python -m pytest tests/ -q                                       # 92 tests, ~38 s
+python -m pytest tests/ -q                                       # 116 tests, ~54 s
 python -m tdp.dynamic_inverse run --smoke --sequence case10_rpi4b_bare_full
+python web/server.py --port 8000                                 # Thermal Studio backend
 ```
 
 Configuration is split on purpose: `configs/measurements_v3.yaml` records what the
