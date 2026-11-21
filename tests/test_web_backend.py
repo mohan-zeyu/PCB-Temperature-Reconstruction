@@ -320,19 +320,38 @@ def test_training_lifts_the_low_emissivity_area_and_infers(tmp_path, monkeypatch
     assert rotated_result["signature_score"] > 0.8
     assert rotated_result["warnings"] and "旋转" in rotated_result["warnings"][0]
 
-    # A small translation must be recovered by the structure-driven window
-    # search; otherwise the learned correction lands on the wrong components.
+
+
+def test_registration_fallback_recovers_a_shifted_frame():
+    """A fixed window plus a few pixels of offset is re-registered."""
+    from types import SimpleNamespace
+
     from scipy.ndimage import shift as ndshift
 
-    moved = np.ascontiguousarray(
-        ndshift(original.temps, (22.0, 20.0), order=1, mode="nearest")
+    from tdp.data.crop import rectify_quad, rotated_rect_corners
+    from tdp.web.inference import _best_orientation
+    from tdp.web.sessions import UploadedFrame, gradient_signature
+
+    frame = np.full((200, 160), 20.0, dtype=np.float32)
+    frame[40:160, 30:130] = 30.0
+    frame[70:100, 55:90] = 45.0
+    frame[110:130, 40:60] = 12.0
+    window = {"center_rc": [100.0, 80.0], "size_hw": [130.0, 110.0], "angle_deg": 0.0}
+    corners = rotated_rect_corners(window["center_rc"], window["size_hw"], 0.0)
+    reference = np.asarray(rectify_quad(frame, corners, (157, 103)), dtype=np.float64) - 20.0
+    board = SimpleNamespace(
+        reference_signature=gradient_signature(reference),
+        preview={"raw": reference},
+        window=window,
+        window_mode="fixed",
+        grid_hw=(157, 103),
+        board_size_mm=(85.0, 56.0),
     )
-    moved_result = predict_frame(
-        board, "moved.csv", _csv(moved, "moved.csv"), device="cpu"
-    )
-    assert moved_result["quarter_turns"] == 0
-    assert moved_result["signature_score"] > 0.6
-    assert any("重新配准" in warning for warning in moved_result["warnings"])
+    moved = np.ascontiguousarray(ndshift(frame, (16.0, 14.0), order=1, mode="nearest"))
+    result = _best_orientation(board, UploadedFrame("x", "", None, moved, 20.0), 20.0)
+    assert result.quarter_turns == 0
+    assert result.signature is not None and result.signature > 0.9
+    assert result.window["center_rc"] == pytest.approx([116.0, 94.0], abs=1.0)
 
 
 # --------------------------------------------------------------------------
