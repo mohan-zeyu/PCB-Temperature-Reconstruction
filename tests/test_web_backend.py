@@ -307,6 +307,18 @@ def test_training_lifts_the_low_emissivity_area_and_infers(tmp_path, monkeypatch
     shift = float(np.mean(result["predicted"][unknown] - result["raw"][unknown]))
     assert shift > 2.0
     assert result["signature_score"] is not None and result["signature_score"] > 0.8
+    assert result["quarter_turns"] == 0
+
+    # The same frame held upside down must be recovered by the orientation
+    # search, not accepted as an unmatched frame with a low score.
+    original = parse_hm_csv(bare[-1][1], bare[-1][0], expect_shape=None)
+    rotated = np.ascontiguousarray(np.rot90(original.temps, 2))
+    rotated_result = predict_frame(
+        board, "rotated.csv", _csv(rotated, "rotated.csv"), device="cpu"
+    )
+    assert rotated_result["quarter_turns"] == 2
+    assert rotated_result["signature_score"] > 0.8
+    assert rotated_result["warnings"] and "旋转" in rotated_result["warnings"][0]
 
 
 # --------------------------------------------------------------------------

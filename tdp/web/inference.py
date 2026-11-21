@@ -18,6 +18,7 @@ is missing, that is an error the user must see.
 from __future__ import annotations
 
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -134,6 +135,67 @@ def resolve_window(board, frame: UploadedFrame) -> tuple[dict, list[str]]:
         }, warnings
 
 
+@dataclass
+class OrientedCrop:
+    """One frame rectified in the rotation that matches the board best."""
+
+    quarter_turns: int  # counter-clockwise, 0..3
+    window: dict
+    theta: np.ndarray
+    valid: np.ndarray
+    signature: float | None
+    warnings: list[str]
+
+
+def _best_orientation(board, frame: UploadedFrame, ambient: float) -> OrientedCrop:
+    """Try the four 90-degree orientations and keep the best structure match.
+
+    A saved board window and the residual net both live in the orientation the
+    board was trained in.  A frame held sideways or upside down still contains
+    the same board, but the fixed window and the net cannot be rotated by a
+    small angle search: 90, 180 and 270 degrees are different discrete cases.
+    Rotating the frame before rectification is cheap, so all four are scored and
+    the highest structure match wins.  Without a stored reference signature
+    there is nothing to score, and the frame is used as uploaded.
+    """
+    reference = np.asarray(board.reference_signature)
+    has_reference = reference.size > 0 and float(np.abs(reference).max()) > 0.0
+    best: OrientedCrop | None = None
+    best_score = -np.inf
+    for turns in range(4):
+        temps = np.ascontiguousarray(np.rot90(frame.temps, turns)) if turns else frame.temps
+        candidate = UploadedFrame(
+            name=frame.name,
+            digest=frame.digest,
+            timestamp=frame.timestamp,
+            temps=temps,
+            ambient_c=ambient,
+        )
+        try:
+            window, warnings = resolve_window(board, candidate)
+            corners = rotated_rect_corners(
+                window["center_rc"], window["size_hw"], window["angle_deg"]
+            )
+            crop = rectify_quad(temps, corners, tuple(board.grid_hw))
+        except (UploadError, ValueError, FloatingPointError):
+            continue
+        theta = np.asarray(crop, dtype=np.float64) - ambient
+        valid = np.isfinite(theta)
+        if not valid.any():
+            continue
+        theta = np.where(valid, theta, 0.0)
+        signature = None
+        if has_reference:
+            signature = max(-1.0, min(1.0, signature_score(reference, theta)))
+        score = signature if signature is not None else 0.0
+        if best is None or score > best_score:
+            best = OrientedCrop(turns, window, theta, valid, signature, list(warnings))
+            best_score = score
+    if best is None:
+        raise UploadError("配准后的板体没有任何有效像素")
+    return best
+
+
 def predict_frame(
     board,
     name: str,
@@ -151,23 +213,21 @@ def predict_frame(
         temps=np.asarray(frame.temps, dtype=np.float32),
         ambient_c=ambient,
     )
-    window, warnings = resolve_window(board, uploaded)
-    corners = rotated_rect_corners(window["center_rc"], window["size_hw"], window["angle_deg"])
-    crop = rectify_quad(frame.temps, corners, tuple(board.grid_hw))
-    theta = np.asarray(crop, dtype=np.float64) - ambient
-    valid = np.isfinite(theta)
-    if not valid.any():
-        raise UploadError("配准后的板体没有任何有效像素")
-    theta = np.where(valid, theta, 0.0)
-
-    signature = None
-    reference = np.asarray(board.reference_signature)
-    if reference.size and float(np.abs(reference).max()) > 0.0:
-        signature = max(-1.0, min(1.0, signature_score(reference, theta)))
-        if signature < MIN_STRUCTURE_SCORE:
-            warnings.append(
-                f"此帧与板型的结构匹配度仅 {signature:.2f}；结果可能不可靠"
-            )
+    oriented = _best_orientation(board, uploaded, ambient)
+    window = oriented.window
+    theta = oriented.theta
+    valid = oriented.valid
+    signature = oriented.signature
+    warnings = oriented.warnings
+    if oriented.quarter_turns:
+        note = f"此帧旋转 {90 * oriented.quarter_turns}° 后与板型一致"
+        if signature is not None:
+            note += f"（结构匹配 {signature:.2f}）"
+        warnings.insert(0, note)
+    if signature is not None and signature < MIN_STRUCTURE_SCORE:
+        warnings.append(
+            f"此帧与板型的结构匹配度仅 {signature:.2f}；结果可能不可靠"
+        )
     if float(valid.mean()) < 0.98:
         warnings.append(f"板体网格仅 {valid.mean() * 100:.1f}% 有有效采样")
     if board.board_size_mm is None:
@@ -189,6 +249,7 @@ def predict_frame(
         "valid_mask": valid,
         "grid_hw": [int(board.grid_hw[0]), int(board.grid_hw[1])],
         "window": window,
+        "quarter_turns": int(oriented.quarter_turns),
         "signature_score": None if signature is None else float(signature),
         "warnings": warnings,
         "device": str(device),

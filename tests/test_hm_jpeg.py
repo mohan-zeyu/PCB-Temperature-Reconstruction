@@ -80,6 +80,18 @@ def test_plain_jpeg_is_rejected_with_an_explanation():
         parse_hm_jpeg(plain, "photo.jpeg")
 
 
+def test_native_sdmp_jpeg_is_rejected_with_an_actionable_message():
+    native = (
+        b"\xff\xd8"
+        + b"Exif\x00\x00II*\x00Radiometric Image HIKMICRO"
+        + b"SDMP\x01\x00\x06\x00"
+        + b"vendor coded temperature stream"
+        + b"\xff\xd9"
+    )
+    with pytest.raises(HMParseError, match="SDMP"):
+        parse_hm_jpeg(native, "IR_00007.jpeg")
+
+
 def test_missing_hipt_box_is_rejected():
     raw = np.full((16, 12), 5200, dtype=np.uint16)
     data = _synthetic_container(raw, 20.0, 30.0, with_hipt=False)
