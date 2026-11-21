@@ -40,12 +40,12 @@ from tdp.web.sessions import (
 _MODEL_CACHE: dict[tuple[str, int, str], torch.nn.Module] = {}
 _MODEL_LOCK = threading.Lock()
 
-MIN_STRUCTURE_SCORE = 0.55
+MIN_STRUCTURE_SCORE = 0.50
 # Below this structure match, retry the window against the board's own
 # reference instead of trusting the recorded one.  A four-pixel offset already
 # drops a matched frame from 0.80 to 0.15, and the learned correction then
 # lands on the wrong components.
-REGISTER_BELOW = 0.70
+REGISTER_BELOW = 0.45
 
 
 def load_operator(checkpoint: Path | str, device: str = "cpu") -> torch.nn.Module:

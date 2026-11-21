@@ -205,6 +205,71 @@ function parseHmCsv(buffer, name) {
   };
 }
 
+/* Radiometric JPEG preview.  The server decoder in tdp/io/hm_jpeg.py is the
+   authority; this only draws the frame before the user starts a rebuild. */
+function findHdriPayload(bytes) {
+  for (let i = 0; i + 5 < bytes.length; i++) {
+    if (bytes[i] === 0xff && bytes[i + 1] === 0xd9
+        && bytes[i + 2] === 0x48 && bytes[i + 3] === 0x44
+        && bytes[i + 4] === 0x52 && bytes[i + 5] === 0x49) return i;
+  }
+  return -1;
+}
+
+function parseHmJpeg(buffer, name) {
+  const bytes = new Uint8Array(buffer);
+  const view = new DataView(buffer);
+  const marker = findHdriPayload(bytes);
+  if (marker < 0) throw new Error('JPEG 中没有 HDRI 温度块');
+  const payload = marker + 2;
+  if (payload + 44 > bytes.length) throw new Error('HDRI 头不完整');
+  const start = payload + 4 + bytes[payload + 4];
+  const width = view.getUint32(payload + 7, true);
+  const count = view.getUint32(payload + 11, true);
+  if (width < 2 || count < 4 || count % width) throw new Error('HDRI 尺寸不正确');
+  const height = count / width;
+  if (start + count * 2 > bytes.length) throw new Error('HDRI 数据不完整');
+  let hipt = -1;
+  for (let i = start + count * 2; i + 4 < bytes.length; i++) {
+    if (bytes[i] === 0x48 && bytes[i + 1] === 0x49 && bytes[i + 2] === 0x50 && bytes[i + 3] === 0x54) {
+      hipt = i;
+      break;
+    }
+  }
+  if (hipt < 0) throw new Error('JPEG 中没有 HIPT 元数据');
+  const tMin = view.getFloat32(hipt + 8 + 124, true);
+  const tMax = view.getFloat32(hipt + 8 + 120, true);
+  if (!Number.isFinite(tMin) || !Number.isFinite(tMax) || tMax <= tMin) throw new Error('HIPT 温度无效');
+  const response = value => 2.7 * value - 0.02897985 * value * value + 0.00027534 * value * value * value;
+  const raw = new Float64Array(count);
+  let rMin = Infinity;
+  let rMax = -Infinity;
+  for (let index = 0; index < count; index++) {
+    const u = (view.getUint16(start + index * 2, true) - 5200) / 100;
+    raw[index] = u;
+    const value = response(u);
+    if (value < rMin) rMin = value;
+    if (value > rMax) rMax = value;
+  }
+  let gain = (tMax - tMin) / (rMax - rMin);
+  gain = Math.min(1.1, Math.max(0.9, gain));
+  const offset = tMax - gain * rMax;
+  const values = [];
+  let low = Infinity;
+  let high = -Infinity;
+  for (let index = 0; index < count; index++) {
+    const temperature = offset + gain * response(raw[index]);
+    values.push(Math.round(temperature * 10));
+    if (temperature < low) low = temperature;
+    if (temperature > high) high = temperature;
+  }
+  return {
+    name, width, height, values, ambient: 0,
+    boardMask: Array(values.length).fill(true),
+    range: `${low.toFixed(1)}–${high.toFixed(1)} °C`
+  };
+}
+
 async function fileDigest(buffer) {
   const bytes = await crypto.subtle.digest('SHA-256', buffer);
   return [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
@@ -291,15 +356,10 @@ async function selectInferenceFile(file) {
     const buffer = await file.arrayBuffer();
     if (inferenceFile !== file) return;
     if (isJpeg) {
-      // The 16-bit matrix inside a radiometric JPEG is decoded on the server
-      // (tdp/io/hm_jpeg.py).  The browser keeps no local preview for it; the
-      // field appears when /api/infer returns.
-      parsedInput = null;
+      parsedInput = parseHmJpeg(buffer, file.name);
+      $('#inference-file-name').textContent = `${file.name} · ${parsedInput.width} × ${parsedInput.height} px`;
       if (mode === 'demo') {
-        $('#inference-file-name').textContent = `${file.name} · 演示模式不支持 JPEG`;
         showInferenceError('演示模式没有模型可运行。请运行 python web/server.py，再上传任意 CSV 或 JPEG。');
-      } else {
-        $('#inference-file-name').textContent = `${file.name} · HIKMICRO JPEG，服务端解码`;
       }
     } else {
       parsedInput = parseHmCsv(buffer, file.name);
