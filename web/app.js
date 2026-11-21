@@ -327,7 +327,7 @@ async function selectInferenceFile(file) {
 async function runInference() {
   if (mode === 'demo') {
     if (!demoMatch) {
-      showInferenceError('演示模式只能显示预存帧。请运行 python web/server.py 后再上传任意 CSV。');
+      showInferenceError('演示模式只能显示预存帧。请运行 python web/server.py 后再上传任意 CSV 或 JPEG。');
       return;
     }
     demoReady = true;
@@ -926,8 +926,8 @@ async function resetPresentation() {
   $('#board-size').value = '';
   $('#bare-files').value = '';
   $('#painted-files').value = '';
-  $('#bare-files-label').textContent = '选择 CSV 文件';
-  $('#painted-files-label').textContent = '选择 CSV 文件';
+  $('#bare-files-label').textContent = '选择 CSV / JPEG 文件';
+  $('#painted-files-label').textContent = '选择 CSV / JPEG 文件';
   $('#bare-box').classList.remove('filled');
   $('#painted-box').classList.remove('filled');
   $('#training-complete').classList.add('hidden');
@@ -1001,7 +1001,7 @@ function setupModeBanner() {
     $('#backend-state').textContent = '后端已连接';
     $('#topbar-state').textContent = '模型服务运行中';
   } else {
-    banner.innerHTML = '<strong>演示模式：未连接后端。</strong> 页面只能显示内置样例。运行 <code>python web/server.py</code> 后刷新，即可上传任意 CSV 并训练新板型。';
+    banner.innerHTML = '<strong>演示模式：未连接后端。</strong> 页面只能显示内置样例。运行 <code>python web/server.py</code> 后刷新，即可上传任意 CSV / JPEG 并训练新板型。';
     banner.classList.add('demo');
     $('#backend-state').textContent = '演示模式（无后端）';
     $('#topbar-state').textContent = '只读演示';
