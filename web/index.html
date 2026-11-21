@@ -35,7 +35,7 @@
       <main>
         <section id="inference-view" class="view active" aria-labelledby="inference-title">
           <div class="page-heading">
-            <div><p class="eyebrow">01 / 温度重建</p><h1 id="inference-title">还原真实<br><em>温度分布</em></h1><p class="intro">选择已训练板型，导入任意一帧裸板红外 CSV，由该板型自己的模型完成重建。</p></div>
+            <div><p class="eyebrow">01 / 温度重建</p><h1 id="inference-title">还原真实<br><em>温度分布</em></h1><p class="intro">选择已训练板型，导入任意一帧裸板红外 CSV 或 JPEG，由该板型自己的模型完成重建。</p></div>
             <div class="heading-aside"><div class="heading-aside-icon">↗</div><p>裸板测量<br>温度重建</p></div>
           </div>
           <div class="inference-grid">
@@ -45,7 +45,7 @@
               <div class="select-wrap"><select id="board-select"></select><span>⌄</span></div>
               <div id="board-details" class="board-details">正在读取板型…</div>
               <div class="divider"></div>
-              <div class="field-title-row"><span class="field-label">裸板红外数据</span><span class="field-helper">CSV</span></div>
+              <div class="field-title-row"><span class="field-label">裸板红外数据</span><span class="field-helper">CSV / JPEG</span></div>
               <div id="upload-input" class="input-pane">
                 <label class="drop-zone" id="inference-drop"><input id="inference-file" type="file" accept=".csv,.jpeg,.jpg,text/csv,image/jpeg"><span class="drop-icon">↑</span><strong>选择 CSV / JPEG 文件</strong><span>或拖放至此</span></label>
                 <p id="inference-file-name" class="upload-caption">支持 HIKMICRO 单帧温度 CSV 或 JPEG</p>
@@ -57,7 +57,7 @@
             <div class="result-panel card">
               <div class="result-header"><div><span class="eyebrow small">结果预览</span><h2>温度场对比</h2></div><span id="result-state" class="state-badge">待处理</span></div>
               <div class="heatmap-grid">
-                <div class="heatmap-card"><div class="heatmap-title"><span>01</span> 裸板红外读数</div><div class="canvas-frame"><canvas id="raw-canvas" width="103" height="157" aria-label="裸板红外温度图"></canvas><div class="canvas-corner top-left"></div><div class="canvas-corner bottom-right"></div><div id="raw-overlay" class="pred-overlay"><span>↑</span><b>请选择 CSV 文件</b></div></div><div class="heatmap-caption"><span>原始数据</span><b id="raw-range">—</b></div></div>
+                <div class="heatmap-card"><div class="heatmap-title"><span>01</span> 裸板红外读数</div><div class="canvas-frame"><canvas id="raw-canvas" width="103" height="157" aria-label="裸板红外温度图"></canvas><div class="canvas-corner top-left"></div><div class="canvas-corner bottom-right"></div><div id="raw-overlay" class="pred-overlay"><span>↑</span><b>请选择 CSV / JPEG 文件</b></div></div><div class="heatmap-caption"><span>原始数据</span><b id="raw-range">—</b></div></div>
                 <div class="heatmap-card"><div class="heatmap-title"><span>02</span> 重建温度场</div><div class="canvas-frame"><canvas id="pred-canvas" width="103" height="157" aria-label="重建温度图"></canvas><div class="canvas-corner top-left"></div><div class="canvas-corner bottom-right"></div><div id="pred-overlay" class="pred-overlay"><span>↗</span><b>等待重建</b></div></div><div class="heatmap-caption"><span>重建结果</span><b id="pred-range">—</b></div></div>
               </div>
               <div class="temperature-scale"><span>低温</span><div class="scale-bar"></div><span>高温</span></div>
