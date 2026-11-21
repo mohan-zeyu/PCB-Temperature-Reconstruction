@@ -320,6 +320,20 @@ def test_training_lifts_the_low_emissivity_area_and_infers(tmp_path, monkeypatch
     assert rotated_result["signature_score"] > 0.8
     assert rotated_result["warnings"] and "旋转" in rotated_result["warnings"][0]
 
+    # A small translation must be recovered by the structure-driven window
+    # search; otherwise the learned correction lands on the wrong components.
+    from scipy.ndimage import shift as ndshift
+
+    moved = np.ascontiguousarray(
+        ndshift(original.temps, (22.0, 20.0), order=1, mode="nearest")
+    )
+    moved_result = predict_frame(
+        board, "moved.csv", _csv(moved, "moved.csv"), device="cpu"
+    )
+    assert moved_result["quarter_turns"] == 0
+    assert moved_result["signature_score"] > 0.6
+    assert any("重新配准" in warning for warning in moved_result["warnings"])
+
 
 # --------------------------------------------------------------------------
 # HTTP API

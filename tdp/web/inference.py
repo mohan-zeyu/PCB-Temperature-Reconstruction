@@ -40,7 +40,12 @@ from tdp.web.sessions import (
 _MODEL_CACHE: dict[tuple[str, int, str], torch.nn.Module] = {}
 _MODEL_LOCK = threading.Lock()
 
-MIN_STRUCTURE_SCORE = 0.30
+MIN_STRUCTURE_SCORE = 0.55
+# Below this structure match, retry the window against the board's own
+# reference instead of trusting the recorded one.  A four-pixel offset already
+# drops a matched frame from 0.80 to 0.15, and the learned correction then
+# lands on the wrong components.
+REGISTER_BELOW = 0.70
 
 
 def load_operator(checkpoint: Path | str, device: str = "cpu") -> torch.nn.Module:
@@ -147,6 +152,24 @@ class OrientedCrop:
     warnings: list[str]
 
 
+def _rectify_with_window(
+    frame: UploadedFrame,
+    window: dict,
+    grid_hw: tuple[int, int],
+    ambient: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Rectify one oriented frame through ``window`` and remove ambient."""
+    corners = rotated_rect_corners(
+        window["center_rc"], window["size_hw"], window["angle_deg"]
+    )
+    crop = rectify_quad(frame.temps, corners, grid_hw)
+    theta = np.asarray(crop, dtype=np.float64) - ambient
+    valid = np.isfinite(theta)
+    if not valid.any():
+        raise UploadError("配准后的板体没有任何有效像素")
+    return np.where(valid, theta, 0.0), valid
+
+
 def _best_orientation(board, frame: UploadedFrame, ambient: float) -> OrientedCrop:
     """Try the four 90-degree orientations and keep the best structure match.
 
@@ -155,13 +178,20 @@ def _best_orientation(board, frame: UploadedFrame, ambient: float) -> OrientedCr
     the same board, but the fixed window and the net cannot be rotated by a
     small angle search: 90, 180 and 270 degrees are different discrete cases.
     Rotating the frame before rectification is cheap, so all four are scored and
-    the highest structure match wins.  Without a stored reference signature
-    there is nothing to score, and the frame is used as uploaded.
+    the highest structure match wins.
+
+    The recorded window is also a fixed camera position.  A few pixels of offset
+    still put the board inside the window, but the learned correction then lands
+    on the wrong components, and the result looks like a ghost of the training
+    board.  When the best fixed-window score is low, every orientation is
+    retried with a structure-driven window search and the best match wins.
+    Without a stored reference signature there is nothing to score, and the
+    frame is used as uploaded.
     """
     reference = np.asarray(board.reference_signature)
     has_reference = reference.size > 0 and float(np.abs(reference).max()) > 0.0
-    best: OrientedCrop | None = None
-    best_score = -np.inf
+    grid_hw = tuple(board.grid_hw)
+    candidates: list[tuple[int, UploadedFrame, dict, np.ndarray, np.ndarray, float | None, list[str]]] = []
     for turns in range(4):
         temps = np.ascontiguousarray(np.rot90(frame.temps, turns)) if turns else frame.temps
         candidate = UploadedFrame(
@@ -173,27 +203,53 @@ def _best_orientation(board, frame: UploadedFrame, ambient: float) -> OrientedCr
         )
         try:
             window, warnings = resolve_window(board, candidate)
-            corners = rotated_rect_corners(
-                window["center_rc"], window["size_hw"], window["angle_deg"]
-            )
-            crop = rectify_quad(temps, corners, tuple(board.grid_hw))
+            theta, valid = _rectify_with_window(candidate, window, grid_hw, ambient)
         except (UploadError, ValueError, FloatingPointError):
             continue
-        theta = np.asarray(crop, dtype=np.float64) - ambient
-        valid = np.isfinite(theta)
-        if not valid.any():
-            continue
-        theta = np.where(valid, theta, 0.0)
         signature = None
         if has_reference:
             signature = max(-1.0, min(1.0, signature_score(reference, theta)))
-        score = signature if signature is not None else 0.0
-        if best is None or score > best_score:
-            best = OrientedCrop(turns, window, theta, valid, signature, list(warnings))
-            best_score = score
-    if best is None:
+        candidates.append((turns, candidate, window, theta, valid, signature, list(warnings)))
+    if not candidates:
         raise UploadError("配准后的板体没有任何有效像素")
-    return best
+
+    best = max(candidates, key=lambda item: item[5] if item[5] is not None else 0.0)
+    best_score = best[5] if best[5] is not None else 0.0
+    preview = getattr(board, "preview", None)
+    if best_score < REGISTER_BELOW and has_reference and preview is not None:
+        reference_theta = np.asarray(preview["raw"], dtype=np.float64)
+        for turns, candidate, window, _theta, _valid, _signature, warnings in candidates:
+            try:
+                registered = register_window(
+                    reference_theta,
+                    window,
+                    candidate,
+                    grid_hw,
+                    initial_window=window,
+                )
+                theta, valid = _rectify_with_window(candidate, registered, grid_hw, ambient)
+                signature = max(-1.0, min(1.0, signature_score(reference, theta)))
+            except (UploadError, ValueError, FloatingPointError):
+                continue
+            if signature > best_score:
+                dy = registered["center_rc"][0] - window["center_rc"][0]
+                dx = registered["center_rc"][1] - window["center_rc"][1]
+                best = (
+                    turns,
+                    candidate,
+                    registered,
+                    theta,
+                    valid,
+                    signature,
+                    warnings + [
+                        f"已按结构重新配准（结构匹配 {signature:.2f}，"
+                        f"窗口偏移 {dy:+.1f}, {dx:+.1f} px）"
+                    ],
+                )
+                best_score = signature
+
+    turns, _candidate, window, theta, valid, signature, warnings = best
+    return OrientedCrop(turns, window, theta, valid, signature, warnings)
 
 
 def predict_frame(
