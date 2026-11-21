@@ -358,6 +358,7 @@ def encode_frame(result: dict) -> dict:
         "height": int(result["grid_hw"][0]),
         "ambient_c": float(result["ambient_c"]),
         "window": result["window"],
+        "quarter_turns": int(result.get("quarter_turns", 0)),
         "signature_score": result["signature_score"],
         "warnings": result["warnings"],
         "model_note": result["model_note"],

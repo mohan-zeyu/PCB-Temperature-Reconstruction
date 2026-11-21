@@ -34,6 +34,12 @@ payload) supplies the two anchors that remove the per-frame ambiguity:
 
 ``RADIOMETRICIMAGE`` closes the file.
 
+The camera also writes a *native* 192 x 256 radiometric JPEG (a JFIF image with
+``SDMP`` APP segments and a "Radiometric Image" Exif description).  Its thermal
+stream is a vendor codec, not the HDRI block, so it is detected and rejected
+with a message pointing at the CSV export.  The campaign delivered the HDRI
+variant, which is the one this module decodes.
+
 Calibration
 -----------
 The response shape was fitted on 142 frames from the 13 campaign sessions that
@@ -153,6 +159,13 @@ def parse_hm_jpeg(
     marker = data.find(_EOI_MAGIC)
     if marker < 0:
         if data.startswith(b"\xff\xd8"):
+            if b"SDMP" in data and b"Radiometric Image" in data:
+                raise HMParseError(
+                    f"{path.name}: native HIKMICRO radiometric JPEG (SDMP container). "
+                    "Its temperature stream is vendor-coded and this reader does not "
+                    "decode it. Export a CSV with HIKMICRO Analyzer, or upload the "
+                    "campaign's HDRI-format JPEG."
+                )
             raise HMParseError(
                 f"{path.name}: JPEG has no HDRI block. It is a colour rendering, "
                 "not a radiometric frame."
