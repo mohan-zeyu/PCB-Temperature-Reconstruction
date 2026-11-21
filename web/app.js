@@ -996,7 +996,7 @@ function setupModeBanner() {
   const banner = $('#mode-banner');
   banner.classList.remove('hidden');
   if (mode === 'server') {
-    banner.innerHTML = '<strong>后端已连接。</strong> 任意 HIKMICRO CSV 会在服务端完成真实推理；新增板型会真正训练模型。';
+    banner.innerHTML = '<strong>后端已连接。</strong>';
     banner.classList.remove('demo');
     $('#backend-state').textContent = '后端已连接';
     $('#topbar-state').textContent = '模型服务运行中';
