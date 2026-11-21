@@ -30,8 +30,9 @@ uv sync                     # 或 python -m venv .venv && .venv/bin/pip install 
 # 打开 http://127.0.0.1:8000/web/
 ```
 
-内置板型需要本地已有的训练权重，见 [web/README.md](web/README.md)。新训练的
-板型保存在 `outputs/web_boards/<board-id>/`（该目录不进 git）。
+两个内置板型随仓库分发在 `models/boards/`，首次启动自动注册到
+`outputs/web_boards/`。板型库可以导出权重 zip，也可以导入别人训练的板型；
+训练或导入的板型同样保存在 `outputs/web_boards/`（该目录不进 git）。
 
 ## 网页工作台
 
@@ -57,6 +58,9 @@ uv sync                     # 或 python -m venv .venv && .venv/bin/pip install 
 - 依次试 0°、90°、180°、270°，取结构匹配最高的方向；
 - 结构匹配低于 0.45 时，用板型自己的参考重新配准窗口（平移 + 缩放）；
 - 返回裸板读数、重建温度、不可信区掩膜、结构匹配分和像素读数。
+
+板型库支持导出权重 zip（`board.json`、`model.pt`、`arrays.npz`、`preview.npz`）
+和导入同样的 zip。这样不用重新训练就能分享一块板，例如 VisionFive 2。
 
 已训练的板型：
 
@@ -178,6 +182,7 @@ tdp/unet/           网页板型的残差 U-Net
 tdp/web/            网页后端：上传、配对、训练、推理、注册表
 tdp/dynamic_inverse/ 旧的动态反演对比路径（不参与当前结果）
 web/                Thermal Studio 前端与启动脚本
+models/boards/      随仓库分发的两个预置板型
 scripts/            运行与出图入口
 docs/plans/         Stage 2/3 方法记录、未来固定负载计划
 tests/              126 个测试

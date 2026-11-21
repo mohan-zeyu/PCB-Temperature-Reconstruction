@@ -1,0 +1,60 @@
+{
+  "id": "raspberry-pi-4b",
+  "name": "Raspberry Pi 4B",
+  "builtin": true,
+  "created_at": "2026-09-09T10:47:42Z",
+  "grid_hw": [
+    157,
+    103
+  ],
+  "board_size_mm": [
+    85.0,
+    56.0
+  ],
+  "pixel_size_mm": 0.5425,
+  "pixel_size_known": true,
+  "window": {
+    "center_rc": [
+      112.93952641708474,
+      93.38042243802526
+    ],
+    "size_hw": [
+      163.44505411386945,
+      107.68144741619635
+    ],
+    "angle_deg": 1.5,
+    "grid_hw": [
+      157,
+      103
+    ],
+    "source": "recorded"
+  },
+  "window_mode": "fixed",
+  "checkpoint": "outputs/web_boards/raspberry-pi-4b/model.pt",
+  "metrics": {
+    "final": {
+      "board_mae_k": 0.19930192270676547,
+      "trusted_mae_k": 0.17931073972370024,
+      "trusted_bias_k": -0.025462065035261786,
+      "masked_mae_k": 0.23178340929566546,
+      "masked_bias_k": -0.03125523538898686,
+      "masked_rmse_k": 0.5739614312549489
+    },
+    "best": {
+      "epoch": 290,
+      "board_mae_k": 0.19930192270676547
+    },
+    "config": {
+      "n_frames": 432,
+      "epochs": 300,
+      "loss": "complete-map L1 over shared board pixels, kelvin",
+      "n_parameters": 538753,
+      "theta_scale_k": 60.0
+    },
+    "basis": "training-set fit against the high-emissivity label"
+  },
+  "pair_count": 432,
+  "note": "case10 / case17 full load and case09 / case16 half load; trained on every pair. The reported error is fit error against the painted label, not held-out generalization.",
+  "training": {},
+  "sample_path": "web/samples/raspberry-pi-4b/HM20260726165220.csv"
+}

@@ -428,6 +428,17 @@ class Handler(BaseHTTPRequestHandler):
     def _error(self, message: str, status: int = 400) -> None:
         self._json({"error": message}, status)
 
+    def _bytes(self, body: bytes, content_type: str, filename: str | None = None) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        if filename:
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.end_headers()
+        self.wfile.write(body)
+
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
@@ -476,6 +487,8 @@ class Handler(BaseHTTPRequestHandler):
         path = unquote(parsed.path)
         if path == "/api/boards":
             self._create_board()
+        elif path == "/api/boards/import":
+            self._import_board()
         elif path == "/api/infer":
             self._infer()
         else:
@@ -523,6 +536,9 @@ class Handler(BaseHTTPRequestHandler):
                 if rest.endswith("/preview"):
                     board = registry.get_board(rest[: -len("/preview")])
                     self._json(encode_preview(board))
+                elif rest.endswith("/export"):
+                    board_id = rest[: -len("/export")]
+                    self._bytes(registry.export_board(board_id), "application/zip", f"{board_id}.zip")
                 else:
                     board = registry.get_board(rest)
                     self._json(board.public_dict())
@@ -586,6 +602,23 @@ class Handler(BaseHTTPRequestHandler):
 
         job = self.jobs.submit(name, task)
         self._json({"job": job.snapshot()}, 202)
+
+    def _import_board(self) -> None:
+        try:
+            form = self._form()
+            upload = form.file("file")
+            if upload is None:
+                self._error("需要选择一个权重 zip 文件")
+                return
+            board = registry.import_board(upload[1], upload[0])
+            self._json({"board": board.public_dict()})
+        except ValueError as exc:
+            self._error(str(exc))
+        except (OSError, KeyError) as exc:
+            self._error(str(exc), 400)
+        except Exception as exc:
+            traceback.print_exc()
+            self._error(f"{type(exc).__name__}: {exc}", 500)
 
     def _infer(self) -> None:
         try:

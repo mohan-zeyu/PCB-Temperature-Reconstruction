@@ -14,9 +14,11 @@ not a board.
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import shutil
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -314,6 +316,69 @@ def delete_board(board_id: str) -> None:
     shutil.rmtree(directory)
 
 
+_BOARD_FILES = ("board.json", "model.pt", "arrays.npz", "preview.npz")
+
+
+def export_board(board_id: str) -> bytes:
+    """Zip one board bundle so it can be shared or backed up."""
+    board = get_board(board_id)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name in _BOARD_FILES:
+            path = board.directory / name
+            if path.exists():
+                archive.write(path, arcname=name)
+    return buffer.getvalue()
+
+
+def import_board(data: bytes, filename: str = "board.zip") -> Board:
+    """Register a shared board zip under a fresh id.
+
+    The archive must hold ``board.json``, ``model.pt`` and ``arrays.npz`` at its
+    root; ``preview.npz`` is optional.  Members are read one by one rather than
+    extracted wholesale, so a crafted name cannot escape the library directory.
+    The imported board is not a built-in: it can be deleted like any trained one.
+    """
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"{filename}: not a zip archive") from exc
+    with archive:
+        names = {info.filename for info in archive.infolist() if not info.is_dir()}
+        missing = {"board.json", "model.pt", "arrays.npz"} - names
+        if missing:
+            raise ValueError(f"{filename}: missing {sorted(missing)}")
+        extra = names - set(_BOARD_FILES)
+        if extra:
+            raise ValueError(f"{filename}: unexpected files {sorted(extra)[:3]}")
+        try:
+            meta = json.loads(archive.read("board.json").decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"{filename}: board.json is not valid JSON") from exc
+        name = str(meta.get("name") or meta.get("id") or "imported board")
+        board_id = next_board_id(name)
+        directory = BOARD_ROOT / board_id
+        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            for member in _BOARD_FILES:
+                if member in names:
+                    (directory / member).write_bytes(archive.read(member))
+            meta["id"] = board_id
+            meta["builtin"] = False
+            meta["created_at"] = _now()
+            meta["checkpoint"] = _rel(directory / "model.pt")
+            (directory / "board.json").write_text(
+                json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            board = load_board(directory)
+            if not board.available:
+                raise ValueError(f"{filename}: imported board has no usable checkpoint or arrays")
+            return board
+        except Exception:
+            shutil.rmtree(directory, ignore_errors=True)
+            raise
+
+
 def _first_sample(sample_dir: str | None) -> Path | None:
     if not sample_dir:
         return None
@@ -364,6 +429,20 @@ def ensure_presets() -> list[dict]:
         directory = BOARD_ROOT / preset["id"]
         checkpoint = _abs(preset["checkpoint"])
         if not checkpoint.exists():
+            bundled = REPO_ROOT / "models" / "boards" / preset["id"]
+            if (bundled / "board.json").exists() and (bundled / "model.pt").exists():
+                directory.mkdir(parents=True, exist_ok=True)
+                for name in ("model.pt", "arrays.npz", "preview.npz"):
+                    source = bundled / name
+                    if source.exists():
+                        shutil.copy2(source, directory / name)
+                meta = json.loads((bundled / "board.json").read_text(encoding="utf-8"))
+                meta["checkpoint"] = _rel(directory / "model.pt")
+                (directory / "board.json").write_text(
+                    json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8"
+                )
+                events.append({"board": preset["id"], "status": "restored-from-bundle"})
+                continue
             events.append({"board": preset["id"], "status": "missing-checkpoint", "path": str(checkpoint)})
             continue
         if (directory / "board.json").exists() and (directory / "arrays.npz").exists() \

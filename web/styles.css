@@ -119,3 +119,6 @@ h1{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",
 .log-state.running{color:#5c8a3f}
 .log-state.done{color:#7d9a7f}
 .log-state.error{color:#a13d37}
+
+/* library import/export */
+.library-toolbar-actions{display:flex;gap:8px;align-items:center}
