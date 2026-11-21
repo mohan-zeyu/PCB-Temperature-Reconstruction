@@ -1,0 +1,60 @@
+{
+  "id": "orange-pi-5-pro",
+  "name": "Orange Pi 5 Pro",
+  "builtin": true,
+  "created_at": "2026-09-12T05:10:03Z",
+  "grid_hw": [
+    164,
+    103
+  ],
+  "board_size_mm": [
+    89.0,
+    56.0
+  ],
+  "pixel_size_mm": 0.5425,
+  "pixel_size_known": true,
+  "window": {
+    "center_rc": [
+      87.85556083243483,
+      109.08559689852547
+    ],
+    "size_hw": [
+      136.1172026495654,
+      85.64677919523217
+    ],
+    "angle_deg": -0.6,
+    "grid_hw": [
+      164,
+      103
+    ],
+    "source": "recorded"
+  },
+  "window_mode": "fixed",
+  "checkpoint": "outputs/web_boards/orange-pi-5-pro/model.pt",
+  "metrics": {
+    "final": {
+      "board_mae_k": 0.16974482908495456,
+      "trusted_mae_k": 0.16229051337627953,
+      "trusted_bias_k": 0.005938944289428749,
+      "masked_mae_k": 0.1874289244265767,
+      "masked_bias_k": 0.004347891011702602,
+      "masked_rmse_k": 0.30194231632780144
+    },
+    "best": {
+      "epoch": 290,
+      "board_mae_k": 0.16974482908495456
+    },
+    "config": {
+      "n_frames": 480,
+      "epochs": 300,
+      "loss": "complete-map L1 over shared board pixels, kelvin",
+      "n_parameters": 538753,
+      "theta_scale_k": 60.0
+    },
+    "basis": "training-set fit against the high-emissivity label"
+  },
+  "pair_count": 480,
+  "note": "case12 / case14 half load and case13 / case15 full load; trained on every pair. The reported error is fit error against the high-emissivity label.",
+  "training": {},
+  "sample_path": "web/samples/orange-pi-5-pro/inference/HM20260727162451.csv"
+}

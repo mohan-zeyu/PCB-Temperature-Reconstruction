@@ -14,17 +14,14 @@
 打开 `http://127.0.0.1:8000/web/`。只绑定 `127.0.0.1`；这个服务没有鉴权，不要
 暴露到公网。
 
-内置板型需要仓库里的已训练权重：
+内置板型有两个来源：
 
-```text
-outputs/thermal/unet_case10/train_both/model_best.pt
-outputs/thermal/unet_opi5pro/train_both/model_best.pt
-outputs/thermal/unet_case10/paired_masks.npz
-outputs/thermal/unet_opi5pro/pairs_both.npz
-```
+1. 优先使用 `outputs/thermal/...` 的训练权重（不在 git 里）；
+2. 这些文件不存在时，回退到随仓库分发的 `models/boards/<board-id>/` 完整板型包
+   （`model.pt`、`arrays.npz`、`preview.npz`、`board.json`）。
 
-第一次启动会把它们复制到 `outputs/web_boards/<board-id>/`，并生成一张预览图。
-缺少权重时服务仍可启动，只是板型库为空；静态演示仍然可用。
+第一次启动会把板型复制到 `outputs/web_boards/<board-id>/`。两处都没有时服务
+仍可启动，只是板型库为空；静态演示仍然可用。
 
 ## 新板型怎么训练
 
@@ -112,7 +109,18 @@ GET    /api/jobs/<id>
 POST   /api/infer                   multipart: board_id, file
 ```
 
+```text
+GET    /api/boards/<id>/export      zip: board.json, model.pt, arrays.npz, preview.npz
+POST   /api/boards/import           multipart: file (zip)
+```
+
 训练是后台任务；浏览器轮询 `/api/jobs/<id>` 拿真实进度、日志和损失曲线。
+
+## 权重导入 / 导出
+
+板型库里的任意板型都可以导出成一个 zip；「导入权重」上传同样的 zip 就会注册成
+一块新板型。导入的板型不是内置板型，可以删除。这样不用重新训练就能分享一块板，
+例如本机训练的 VisionFive 2。
 
 ## 实测参考
 

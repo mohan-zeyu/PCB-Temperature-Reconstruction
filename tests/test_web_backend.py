@@ -354,6 +354,86 @@ def test_registration_fallback_recovers_a_shifted_frame():
     assert result.window["center_rc"] == pytest.approx([116.0, 94.0], abs=1.0)
 
 
+def _fake_board(directory: Path, board_id: str = "fake-board") -> Path:
+    """A minimal on-disk board bundle for export/import tests."""
+    directory.mkdir(parents=True, exist_ok=True)
+    grid = (157, 103)
+    np.savez_compressed(
+        directory / "arrays.npz",
+        board_mask=np.ones(grid, dtype=bool),
+        unknown_mask=np.zeros(grid, dtype=bool),
+        reference_signature=np.zeros(grid, dtype=np.float32),
+    )
+    np.savez_compressed(
+        directory / "preview.npz",
+        raw=np.zeros(grid, dtype=np.float32),
+        predicted=np.zeros(grid, dtype=np.float32),
+        ambient_c=np.float32(25.0),
+        board_mask=np.ones(grid, dtype=bool),
+        unknown_mask=np.zeros(grid, dtype=bool),
+        signature_score=np.float32(1.0),
+    )
+    (directory / "model.pt").write_bytes(b"\x00" * 32)
+    (directory / "board.json").write_text(
+        json.dumps(
+            {
+                "id": board_id,
+                "name": "Fake Board",
+                "builtin": False,
+                "created_at": "2026-01-01T00:00:00Z",
+                "grid_hw": list(grid),
+                "board_size_mm": [85.0, 56.0],
+                "pixel_size_mm": 0.5425,
+                "pixel_size_known": True,
+                "window": {"center_rc": [100.0, 80.0], "size_hw": [130.0, 110.0], "angle_deg": 0.0},
+                "window_mode": "fixed",
+                "checkpoint": f"outputs/web_boards/{board_id}/model.pt",
+                "metrics": {"final": {"board_mae_k": 0.2}},
+                "pair_count": 4,
+                "note": "",
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return directory
+
+
+def test_board_export_import_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(registry, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(registry, "BOARD_ROOT", tmp_path / "outputs" / "web_boards")
+    _fake_board(tmp_path / "outputs" / "web_boards" / "fake-board")
+
+    data = registry.export_board("fake-board")
+    imported = registry.import_board(data, "fake-board.zip")
+
+    assert imported.id != "fake-board"
+    assert imported.name == "Fake Board"
+    assert imported.builtin is False
+    assert imported.grid_hw == (157, 103)
+    assert imported.available
+    assert imported.checkpoint == (
+        tmp_path / "outputs" / "web_boards" / imported.id / "model.pt"
+    ).resolve()
+
+    with pytest.raises(ValueError):
+        registry.import_board(b"not a zip", "broken.zip")
+
+
+def test_presets_fall_back_to_the_bundled_boards(tmp_path, monkeypatch):
+    repository = tmp_path / "repo"
+    bundled = repository / "models" / "boards" / "raspberry-pi-4b"
+    _fake_board(bundled, board_id="raspberry-pi-4b")
+    monkeypatch.setattr(registry, "REPO_ROOT", repository)
+    monkeypatch.setattr(registry, "BOARD_ROOT", repository / "outputs" / "web_boards")
+
+    events = registry.ensure_presets()
+    statuses = {event["board"]: event["status"] for event in events}
+    assert statuses["raspberry-pi-4b"] == "restored-from-bundle"
+    assert statuses["orange-pi-5-pro"] == "missing-checkpoint"
+    assert (repository / "outputs" / "web_boards" / "raspberry-pi-4b" / "board.json").exists()
+
+
 # --------------------------------------------------------------------------
 # HTTP API
 # --------------------------------------------------------------------------

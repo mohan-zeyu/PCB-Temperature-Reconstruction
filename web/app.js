@@ -904,6 +904,15 @@ async function updateLibrary() {
       navigate('inference');
     });
     actions.append(enter);
+    if (mode === 'server') {
+      const save = document.createElement('button');
+      save.type = 'button';
+      save.textContent = '导出权重';
+      save.addEventListener('click', () => {
+        window.location.href = `/api/boards/${board.id}/export`;
+      });
+      actions.append(save);
+    }
     if (mode === 'server' && !board.builtin) {
       const remove = document.createElement('button');
       remove.type = 'button';
@@ -939,6 +948,28 @@ async function drawPreview(canvas, board) {
     drawMap(canvas, view.display, view, { filled: true });
   } catch (error) {
     /* a missing preview must not break the library */
+  }
+}
+
+function showLibraryError(message) {
+  const element = $('#library-error');
+  element.textContent = message;
+  element.classList.remove('hidden');
+}
+
+async function importWeights(file) {
+  if (!file) return;
+  $('#library-error').classList.add('hidden');
+  try {
+    const form = new FormData();
+    form.append('file', file, file.name);
+    const payload = await postForm('/api/boards/import', form);
+    await refreshBoards(payload.board ? payload.board.id : null);
+    navigate('library');
+  } catch (error) {
+    showLibraryError(error.message);
+  } finally {
+    $('#library-import-file').value = '';
   }
 }
 
@@ -1046,6 +1077,8 @@ function connectEvents() {
   $('#start-training').addEventListener('click', startTraining);
   $('#open-trained-board').addEventListener('click', () => { resetInferenceInput(); navigate('inference'); });
   $('#library-add').addEventListener('click', () => navigate('training'));
+  $('#library-import').addEventListener('click', () => $('#library-import-file').click());
+  $('#library-import-file').addEventListener('change', event => importWeights(event.target.files[0] || null));
   $('#reset-demo').addEventListener('click', resetPresentation);
 }
 
