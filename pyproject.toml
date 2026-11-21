@@ -1,7 +1,7 @@
 [project]
 name = "pcb"
 version = "0.2.0"
-description = "Emissivity repair and dynamic thermal inversion from PCB infrared image sequences"
+description = "True temperature reconstruction and thermal forecasting from PCB infrared image sequences"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
